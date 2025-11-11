@@ -24,32 +24,50 @@ echo "  ✅ IMU"
 echo ""
 
 # ========================================
-# Step 1: Cleanup any existing processes
+# Step 1: Stop interfering processes
 # ========================================
-echo -e "${YELLOW}Step 1: Cleaning up existing processes...${NC}"
+echo -e "${YELLOW}Step 1: Stopping interfering processes...${NC}"
+
+# Stop OLED display process (can interfere with serial port)
+if pgrep -f yahboom_oled > /dev/null; then
+    echo "  Stopping yahboom_oled process..."
+    pkill -f yahboom_oled
+    sleep 0.5
+    echo -e "${GREEN}  ✅ OLED process stopped${NC}"
+fi
+
+# Cleanup any existing robot processes
 "$SCRIPT_DIR/cleanup_robot.sh"
 
 # Wait a moment for cleanup to complete
 sleep 1
 
 # ========================================
-# Step 2: Fix device permissions
+# Step 2: Check hardware connectivity
 # ========================================
 echo -e "${YELLOW}Step 2: Checking device permissions...${NC}"
 
-# Fix LiDAR permissions
-if [ -e "/dev/ttyUSB0" ]; then
-    sudo chmod 666 /dev/ttyUSB0 2>/dev/null
-    echo -e "${GREEN}✅ LiDAR permissions set (/dev/ttyUSB0)${NC}"
-elif [ -e "/dev/ttyUSB1" ]; then
-    sudo chmod 666 /dev/ttyUSB1 2>/dev/null
-    echo -e "${GREEN}✅ LiDAR permissions set (/dev/ttyUSB1)${NC}"
+# Check robot controller
+if [ -e "/dev/myserial" ]; then
+    echo -e "${GREEN}✅ Robot controller connected${NC}"
+else
+    echo -e "${RED}❌ Robot controller not found (/dev/myserial)${NC}"
+    echo "   Check USB cable and power"
+fi
+
+# Check LiDAR
+if [ -e "/dev/rplidar" ]; then
+    echo -e "${GREEN}✅ RPLiDAR connected${NC}"
+    echo -e "${YELLOW}   NOTE: Ensure RPLiDAR motor is spinning!${NC}"
+elif [ -e "/dev/ttyUSB0" ] || [ -e "/dev/ttyUSB1" ]; then
+    sudo chmod 666 /dev/ttyUSB* 2>/dev/null
+    echo -e "${YELLOW}⚠️  Found USB devices but no /dev/rplidar symlink${NC}"
 else
     echo -e "${YELLOW}⚠️  No /dev/ttyUSB* found - LiDAR may not be connected${NC}"
 fi
 
 # Check camera
-if lsusb | grep -q -E "Orbbec|Astra"; then
+if lsusb | grep -q -E "Orbbec|Astra|2bc5"; then
     echo -e "${GREEN}✅ Camera detected${NC}"
 else
     echo -e "${YELLOW}⚠️  Camera not detected${NC}"
