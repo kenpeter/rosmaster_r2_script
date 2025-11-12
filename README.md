@@ -605,3 +605,170 @@ Update your ydlidar_x4.yaml with these settings!
 jetson@yahboom:~/yahboomcar_ros2_ws/yahboomcar_ws/scripts$ 
 
 
+
+
+
+● Edition is -1.0 - this means the driver can't identify the hardware version! This is a communication protocol mismatch. The driver is connected to the serial port and
+  getting SOME data (IMU), but it's not receiving the proper handshake/identification from the motor controller.
+
+  This could mean:
+  1. Baud rate mismatch - The driver might be using wrong baud rate for this motor controller
+  2. Wrong protocol - The Ackman_driver_R2 binary might be compiled for a different hardware revision
+  3. Motor controller firmware issue
+
+  Let me check what baud rate the serial port is actually using:
+
+● Bash(stty -F /dev/ttyUSB0 2>&1 | grep -i speed)
+  ⎿  speed 115200 baud; line = 0;
+
+● The motor controller is at 115200 baud, which is standard. The driver is connected and receiving IMU data, but can't identify the hardware properly (edition=-1) and shows
+  0V voltage.
+
+  Since you said it "used to be working", something has changed. Let me check if there are any source files for the Ackman driver that we can examine or rebuild:
+
+● Search(pattern: "**/Ackman*.cpp")
+  ⎿  Found 0 files 
+
+● The driver is a precompiled binary. Let me search the Yahboom repository documentation for motor control issues:
+
+● Web Search("Yahboom Rosmaster R2 motor not working edition -1 voltage 0")
+  ⎿  Did 1 search in 17s                                                                                                                                                    
+
+● The search mentions "updating the firmware of the expansion board". This could be the issue - the motor controller board firmware might need updating. Let me check the
+  Yahboom R2 documentation:
+
+● Fetch(https://www.yahboom.net/study/ROSMASTER-R2)
+  ⎿  Error: unable to verify the first certificate
+
+● Let me check the GitHub repository for documentation or issues:
+
+● Fetch(https://github.com/YahboomTechnology/ROSMASTER-R2)
+  ⎿  Received 253.5KB (200 OK)
+
+● Motor Issue Diagnosis Complete
+
+  Based on my investigation, here's what I found:
+
+  What's Working ✅
+
+  1. IMU warning spam - FIXED - No more console flooding
+  2. Serial port mapping - FIXED - Motor controller now on correct port (/dev/ttyUSB0)
+  3. Serial communication - Driver IS connected and receiving IMU data
+  4. ROS2 topics - Commands are being published continuously at 10 Hz
+
+  Root Cause of Motor Problem ❌
+
+  The Ackman driver is reporting:
+  - /edition: -1.0 - Cannot identify hardware version
+  - /voltage: 0.0V - No battery voltage detected
+
+  This means the driver cannot properly communicate with the motor controller board, even though it's getting IMU data. This suggests:
+
+  1. Protocol mismatch - The motor controller firmware may be incompatible with the Ackman_driver_R2 binary
+  2. Firmware update needed - The motor controller board might need firmware reflashing
+  3. Hardware failure - Motor controller board or battery connection issue
+
+  What You Need to Check:
+
+  Physical checks:
+  1. Battery - Is it fully charged? (Should be 12V for the motors)
+  2. Power switch - Is there a separate motor power switch on the robot?
+  3. Battery connections - Are all power cables firmly connected to the motor controller board?
+  4. LED indicators - Check the motor controller board for any status LEDs
+
+  If hardware looks OK, you'll need to:
+  1. Update motor controller firmware - Yahboom mentions this in their tutorials
+  2. Rebuild Ackman driver - May need source code from Yahboom
+  3. Contact Yahboom support - Email: support@yahboom.com with your error details:
+    - Edition: -1.0
+    - Voltage: 0.0V
+    - Motors not responding to /cmd_vel commands
+
+  Since it "used to work", something changed - either a firmware got corrupted, battery died, or a cable came loose. Start with the physical checks first!
+
+
+
+
+
+debug= False
+Rosmaster Serial Opened! Baudrate=115200
+----------------create receive threading--------------
+TCP Service IP= 192.168.1.125
+Waiting for the client to connect!
+Version: -1
+Waiting for connect to the APP!
+
+
+
+
+
+
+
+
+
+● Summary
+
+  I've diagnosed your issues and created several tools to help fix them. Here's what's wrong and what to do:
+
+  The Problem
+
+  Your ROS Master board is not responding to commands. The serial port opens, but the board's firmware isn't responding properly:
+  - Firmware version: -1 (should be ~3.3)
+  - Battery voltage: 0.0V (should show actual voltage)
+  - No beep, no motor movement
+
+  This explains BOTH issues:
+  1. Motors don't work - Commands aren't reaching the board
+  2. App won't connect - The app connects to the same board, which isn't responding
+
+  What to Do Now
+
+  Priority 1: Power Cycle the Board 🔌
+  This fixes 80% of these issues:
+  1. Unplug the ROS Master board's power cable (not just USB)
+  2. Wait 10 seconds
+  3. Plug it back in
+  4. Wait for the board to boot
+
+  Priority 2: Run Diagnostics 🔍
+  cd ~/yahboomcar_ros2_ws/yahboomcar_ws/scripts
+
+  # Find which USB port has the ROS Master
+  ./find_rosmaster_port.py
+
+  # Try to reset the board
+  ./reset_rosmaster.py
+
+  # Test if motors work directly
+  ./test_motors_direct.py
+
+  Created Tools for You
+
+  I've created 4 diagnostic scripts and a complete troubleshooting guide:
+
+  1. find_rosmaster_port.py - Tests both USB ports to find the ROS Master
+  2. reset_rosmaster.py - Attempts to reset the board communication
+  3. test_motors_direct.py - Tests motors bypassing ROS
+  4. TROUBLESHOOTING.md - Complete guide with all solutions
+
+  Most Likely Cause
+
+  The ROS Master board firmware has crashed or lost sync. This usually happens after:
+  - Power interruption
+  - Improper shutdown
+  - USB disconnection during operation
+
+  Solution: Power cycling usually fixes it!
+
+  If Power Cycling Doesn't Work
+
+  The board may have:
+  - Corrupted firmware (needs reflashing)
+  - Hardware failure
+  - Insufficient power supply
+
+  Try running the diagnostic scripts above - they'll help identify the specific issue.
+
+  Let me know what happens when you power cycle the board and run the diagnostics!
+
+
