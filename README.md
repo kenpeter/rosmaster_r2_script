@@ -772,3 +772,47 @@ Waiting for connect to the APP!
   Let me know what happens when you power cycle the board and run the diagnostics!
 
 
+
+
+
+===
+
+
+Read(~/Rosmaster/rosmaster/start_app.sh)
+  ⎿  Read 24 lines
+
+● Perfect! I found where the Rosmaster startup is configured. Here's what's happening:
+
+  The Startup Configuration
+
+  The messages you see come from the Rosmaster robot control software that auto-starts on boot.
+
+  Location: /home/jetson/.config/autostart/start_app.sh.desktop:3
+
+  This desktop entry file launches:
+  - Script: /home/jetson/Rosmaster/rosmaster/start_app.sh:18
+  - Which runs: python3 /home/jetson/Rosmaster/rosmaster/rosmaster_main.py
+
+  To disable auto-start:
+
+  # Option 1: Disable the autostart entry
+  rm ~/.config/autostart/start_app.sh.desktop
+
+  # Option 2: Hide it (keeps file but disables it)
+  sed -i 's/Hidden=false/Hidden=true/' ~/.config/autostart/start_app.sh.desktop
+
+  To stop the current running instance:
+
+  pkill -f rosmaster_main.py
+
+  The output you're seeing includes:
+  - Rosmaster Serial Opened! Baudrate=115200 - Serial connection to robot hardware
+  - TCP Service IP= 192.168.1.125 - Network service for remote control
+  - Waiting for connect to the APP! - Waiting for the Yahboom mobile app to connect
+
+  This is the robot control daemon that manages motor control, sensor data, and app communication.
+
+
+
+
+
