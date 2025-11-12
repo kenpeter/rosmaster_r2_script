@@ -403,3 +403,205 @@ ros2 topic pub /cmd_vel geometry_msgs/Twist "{}" --once
 **Created:** November 10, 2025
 **Workspace:** ~/yahboomcar_ros2_ws/yahboomcar_ws
 **ROS2 Version:** Humble
+
+
+
+
+  I've successfully configured your system for the YDLIDAR X4 (not RPLiDAR). Here's what was accomplished:
+
+  ✅ Completed Configuration
+
+  1. Identified the correct LiDAR: YDLIDAR X4 with CH340 USB chip (ID: 1a86:7522)
+  2. Created udev rules for automatic /dev/ydlidar symlink creation
+  3. Created YDLIDAR X4 configuration file with proper parameters:
+    - Baudrate: 128000
+    - Port: /dev/ydlidar
+    - Sample rate: 5 kHz
+  4. Created custom YDLIDAR launch file for your robot
+  5. Updated 3 laser launch files to use YDLIDAR instead of RPLiDAR
+  6. Created diagnostic tools:
+    - scripts/diagnose_ydlidar.py - Tests all ports/baudrates
+    - scripts/test_ydlidar.sh - Quick ROS2 driver test
+  7. Created comprehensive documentation: YDLIDAR_SETUP.md
+
+  ⚠️ Current Issue
+
+  The YDLIDAR hardware partially works but has a critical issue:
+
+  - ✅ USB device detected
+  - ✅ Serial port opens
+  - ✅ Basic serial communication works
+  - ❌ YDLIDAR SDK health check fails ("cannot retrieve YDLidar health code: ffffffff")
+  - ❌ No scan data published
+
+  Possible Causes
+
+  1. Non-standard firmware on this YDLIDAR unit
+  2. Hardware defect requiring replacement
+  3. Power insufficiency - may need powered USB hub
+  4. Incompatibility with the installed YDLIDAR SDK version
+
+  Recommended Next Steps
+
+  1. Try a powered USB hub - Connect YDLIDAR through an external powered USB 3.0 hub to ensure adequate power
+  2. Contact Yahboom support - Provide them with:
+    - This diagnostic information
+    - Ask if this unit has custom firmware or special configuration
+  3. Run robot without LiDAR temporarily - All other functions (motors, camera, IMU) work fine
+  4. Request replacement if the unit is confirmed defective
+
+  All configuration files are in place and ready. Once the hardware issue is resolved (via powered hub, firmware update, or replacement), the system should work immediately.
+
+
+
+
+
+
+jetson@yahboom:~/yahboomcar_ros2_ws/yahboomcar_ws/scripts$ ./test_ydlidar.sh 
+======================================================================
+  YDLIDAR X4 Test Script
+======================================================================
+
+[1/3] Checking YDLIDAR device...
+✅ /dev/ydlidar found
+lrwxrwxrwx 1 root root 7 Nov 12 10:49 /dev/ydlidar -> ttyUSB0
+
+[2/3] USB Device Info...
+Bus 001 Device 011: ID 1a86:7522 QinHeng Electronics USB Serial
+
+[3/3] Launching YDLIDAR ROS2 node...
+This will run for 15 seconds to collect scan data
+You should hear the motor spinning...
+
+[INFO] [launch]: All log files can be found below /home/jetson/.ros/log/2025-11-12-11-03-40-370542-yahboom-9228
+[INFO] [launch]: Default logging verbosity is set to INFO
+[INFO] [ydlidar_ros2_driver_node-1]: process started with pid [9289]
+[INFO] [static_transform_publisher-2]: process started with pid [9291]
+[static_transform_publisher-2] [WARN] [1762905820.647897755] []: Old-style arguments are deprecated; see --help for new-style arguments
+[ydlidar_ros2_driver_node-1] [INFO] [1762905820.665335367] [ydlidar_ros2_driver_node]: [YDLIDAR INFO] Current ROS Driver Version: 1.0.1
+[ydlidar_ros2_driver_node-1] 
+[ydlidar_ros2_driver_node-1] YDLidar SDK initializing
+[ydlidar_ros2_driver_node-1] YDLidar SDK has been initialized
+[ydlidar_ros2_driver_node-1] [YDLIDAR]:SDK Version: 1.0.6
+[static_transform_publisher-2] [INFO] [1762905820.680335105] [static_tf_pub_laser]: Spinning until stopped - publishing transform
+[static_transform_publisher-2] translation: ('0.000000', '0.000000', '0.020000')
+[static_transform_publisher-2] rotation: ('0.000000', '0.000000', '0.000000', '1.000000')
+[static_transform_publisher-2] from 'base_link' to 'laser'
+[ydlidar_ros2_driver_node-1] LiDAR successfully connected
+[ydlidar_ros2_driver_node-1] Error, cannot retrieve YDLidar health code: ffffffff
+
+Checking /scan topic...
+[ydlidar_ros2_driver_node-1] get Device Information Error
+[ydlidar_ros2_driver_node-1] [CYdLidar::initialize] Error initializing YDLIDAR check status under [/dev/ydlidar] and [128000].
+[ydlidar_ros2_driver_node-1] [ERROR] [1762905823.332140789] [ydlidar_ros2_driver_node]: Unknown error
+[ydlidar_ros2_driver_node-1] 
+[ydlidar_ros2_driver_node-1] [INFO] [1762905823.341034171] [ydlidar_ros2_driver_node]: [YDLIDAR INFO] Now YDLIDAR is stopping .......
+[INFO] [ydlidar_ros2_driver_node-1]: process has finished cleanly [pid 9289]
+Waiting for scan data...
+
+Checking scan message:
+WARNING: topic [/scan] does not appear to be published yet
+Could not determine the type for the passed topic
+
+======================================================================
+Test completed!
+
+If you saw scan data above, the YDLIDAR X4 is working correctly!
+======================================================================
+jetson@yahboom:~/yahboomcar_ros2_ws/yahboomcar_ws/scripts$ ./diagnose_ydlidar.py 
+============================================================
+  YDLIDAR X4 Diagnostic Tool
+============================================================
+
+============================================================
+Testing: /dev/ttyUSB0 at 128000 baud
+============================================================
+✅ Port opened successfully
+
+1. Testing motor control (DTR signal)...
+   Motor ON (DTR=Low)
+
+2. Sending device info request...
+   ✅ Received 12 bytes
+   Data (hex): 62c4874587a3ffd3c383d7f2
+
+3. Reading raw scan data...
+   ✅ Received 3 bytes of scan data
+   First 50 bytes (hex): d3c3b1
+
+============================================================
+Testing: /dev/ttyUSB1 at 128000 baud
+============================================================
+   ❌ Serial error: [Errno 2] could not open port /dev/ttyUSB1: [Errno 2] No such file or directory: '/dev/ttyUSB1'
+
+============================================================
+Testing: /dev/ydlidar at 128000 baud
+============================================================
+✅ Port opened successfully
+
+1. Testing motor control (DTR signal)...
+   Motor ON (DTR=Low)
+
+2. Sending device info request...
+   ✅ Received 72 bytes
+   Data (hex): b1fbb806b781b30622a6068685ab4620f3858ad3c3a1d7aff2a487638ab9a3f3b6d3068789a5aa0e0685a2d3d389a7c3a4da
+   ✅ Found YDLIDAR signature (0xA5)
+
+============================================================
+✅ SUCCESS! Working configuration found:
+   Port: /dev/ydlidar
+   Baudrate: 128000
+============================================================
+
+============================================================
+Testing: /dev/ttyUSB0 at 115200 baud
+============================================================
+✅ Port opened successfully
+
+1. Testing motor control (DTR signal)...
+   Motor ON (DTR=Low)
+
+2. Sending device info request...
+   ⚠️  No response to device info command
+
+3. Reading raw scan data...
+   ✅ Received 56 bytes of scan data
+   First 50 bytes (hex): 1cf824fc38ff0cfc4294855c1f2434700c6a1208984c30e84634e8d40d688c4470142e8080ed8c040c180f9c0a24800ebc39
+
+============================================================
+Testing: /dev/ttyUSB1 at 115200 baud
+============================================================
+   ❌ Serial error: [Errno 2] could not open port /dev/ttyUSB1: [Errno 2] No such file or directory: '/dev/ttyUSB1'
+
+============================================================
+Testing: /dev/ttyUSB0 at 230400 baud
+============================================================
+✅ Port opened successfully
+
+1. Testing motor control (DTR signal)...
+   Motor ON (DTR=Low)
+
+2. Sending device info request...
+   ✅ Received 19 bytes
+   Data (hex): 0169fc0169fc01a1c001a15441a1c741212151
+
+3. Reading raw scan data...
+   ⚠️  No scan data received
+
+============================================================
+Testing: /dev/ttyUSB1 at 230400 baud
+============================================================
+   ❌ Serial error: [Errno 2] could not open port /dev/ttyUSB1: [Errno 2] No such file or directory: '/dev/ttyUSB1'
+
+============================================================
+  DIAGNOSTIC SUMMARY
+============================================================
+
+✅ Found working configuration(s):
+   - /dev/ydlidar @ 128000 baud
+
+Update your ydlidar_x4.yaml with these settings!
+============================================================
+jetson@yahboom:~/yahboomcar_ros2_ws/yahboomcar_ws/scripts$ 
+
+
