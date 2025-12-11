@@ -157,7 +157,17 @@ Your YDLidar TG30 is now properly configured with a **permanent udev rule** and 
 
 
 
+
+  Start the lidar:
   cd /home/jetson/yahboomcar_ros2_ws/yahboomcar_ws
   source install/setup.bash
   ros2 launch my_ydlidar_ros2_driver ydlidar_launch.py
+
+  Check scan data (in another terminal):
+  cd /home/jetson/yahboomcar_ros2_ws/yahboomcar_ws
+  source install/setup.bash
+  ros2 topic list
+  ros2 topic hz /scan
+  ros2 topic echo /scan --once
+
 
