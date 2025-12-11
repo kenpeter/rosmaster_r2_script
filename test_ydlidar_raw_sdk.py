@@ -15,14 +15,14 @@ def main():
     print("="*60)
 
     # Path to the tof_test binary
-    tof_test_path = "/home/jetson/yahboomcar_ros2_ws/software/ydlidar-sdk/build/tof_test"
+    tof_test_path = "/home/jetson/yahboomcar_ros2_ws/yahboomcar_ws/build/ydlidar-sdk/build/tof_test"
 
     # Check if binary exists
     if not os.path.exists(tof_test_path):
         print(f"\n❌ Error: tof_test binary not found at:")
         print(f"   {tof_test_path}")
         print("\nPlease build the YDLidar SDK first:")
-        print("   cd /home/jetson/yahboomcar_ros2_ws/software/ydlidar-sdk")
+        print("   cd /home/jetson/yahboomcar_ros2_ws/yahboomcar_ws/build/ydlidar-sdk")
         print("   mkdir -p build && cd build")
         print("   cmake ..")
         print("   make")
@@ -64,7 +64,7 @@ def main():
         # The binary will output directly to the terminal
         result = subprocess.run(
             [tof_test_path],
-            cwd="/home/jetson/yahboomcar_ros2_ws/software/ydlidar-sdk/build"
+            cwd="/home/jetson/yahboomcar_ros2_ws/yahboomcar_ws/build/ydlidar-sdk/build"
         )
 
         if result.returncode == 0:
