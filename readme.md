@@ -171,3 +171,15 @@ Your YDLidar TG30 is now properly configured with a **permanent udev rule** and 
   ros2 topic echo /scan --once
 
 
+
+  # If the driver is not running, start it first in Terminal 1:
+  cd /home/jetson/yahboomcar_ros2_ws/yahboomcar_ws
+  source install/setup.bash
+  ros2 launch my_ydlidar_ros2_driver ydlidar_launch.py
+
+  # In Terminal 2, restart RViz2:
+  cd /home/jetson/yahboomcar_ros2_ws/yahboomcar_ws
+  source install/setup.bash
+  rviz2 -d src/yahboomcar_rviz/rviz/laser_scan.rviz
+
+
