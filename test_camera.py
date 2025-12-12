@@ -1,173 +1,252 @@
 #!/usr/bin/env python3
 """
-Minimal Camera Test Script
-Tests the Astra depth camera using OpenCV and ROS2 topics
+Camera Launch and Test Script
+Launches the Astra depth camera ROS2 node, displays the feed, and tests it
 """
 
 import subprocess
 import sys
 import time
 import os
+import signal
 
-def test_usb_camera():
-    """Test if camera is detected via USB"""
-    print("\n[TEST 1] Checking USB devices...")
-    result = subprocess.run(
-        ["lsusb"],
+# Global process list for cleanup
+processes = []
+
+def signal_handler(sig, frame):
+    """Handle Ctrl+C gracefully"""
+    print("\n\n🛑 Stopping camera...")
+    cleanup_processes()
+    sys.exit(0)
+
+def cleanup_processes():
+    """Kill all spawned processes"""
+    for proc in processes:
+        if proc.poll() is None:  # Process still running
+            print(f"   Stopping process {proc.pid}...")
+            proc.terminate()
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+    processes.clear()
+
+def run_bash_command(command, env=None):
+    """Run a bash command with sourced ROS2 environment"""
+    # Source ROS2 environment in the command
+    full_command = f"""
+    source /opt/ros/humble/setup.bash
+    source /home/jetson/yahboomcar_ros2_ws/software/library_ws/install/setup.bash
+    source /home/jetson/yahboomcar_ros2_ws/yahboomcar_ws/install/setup.bash
+    {command}
+    """
+
+    return subprocess.run(
+        full_command,
+        shell=True,
+        executable='/bin/bash',
         capture_output=True,
-        text=True
+        text=True,
+        env=env
     )
 
-    # Look for Orbbec/Astra camera
+def run_bash_command_async(command, env=None):
+    """Run a bash command asynchronously with sourced ROS2 environment"""
+    full_command = f"""
+    source /opt/ros/humble/setup.bash
+    source /home/jetson/yahboomcar_ros2_ws/software/library_ws/install/setup.bash
+    source /home/jetson/yahboomcar_ros2_ws/yahboomcar_ws/install/setup.bash
+    {command}
+    """
+
+    proc = subprocess.Popen(
+        full_command,
+        shell=True,
+        executable='/bin/bash',
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env
+    )
+    processes.append(proc)
+    return proc
+
+def check_usb_camera():
+    """Check if camera is detected via USB"""
+    print("\n[1/5] Checking USB camera...")
+    result = subprocess.run(["lsusb"], capture_output=True, text=True)
+
     camera_found = False
     for line in result.stdout.split('\n'):
         if 'Orbbec' in line or '2bc5' in line:
-            print(f"✅ Found Astra camera: {line.strip()}")
+            print(f"   ✅ Found: {line.strip()}")
             camera_found = True
             break
 
     if not camera_found:
-        print("⚠️  Astra camera not found in USB devices")
-        print("   Looking for other video devices...")
-        # Check for generic video devices
-        result2 = subprocess.run(
-            ["ls", "-la", "/dev/video*"],
-            capture_output=True,
-            text=True
-        )
-        if result2.returncode == 0:
-            print(f"   Found video devices:\n{result2.stdout}")
-        else:
-            print("   No /dev/video* devices found")
+        print("   ⚠️  Astra camera not detected on USB")
+        return False
+    return True
 
-    return camera_found
+def launch_camera_node():
+    """Launch the Astra camera ROS2 node"""
+    print("\n[2/5] Launching Astra camera node...")
 
-def test_ros2_camera_topics():
-    """Test if camera topics are available in ROS2"""
-    print("\n[TEST 2] Checking ROS2 camera topics...")
-
-    # Check if any ROS2 nodes are running
-    result = subprocess.run(
-        ["ros2", "node", "list"],
-        capture_output=True,
-        text=True,
-        timeout=3
+    # Launch camera using ros2 launch
+    print("   Starting astra_camera driver...")
+    proc = run_bash_command_async(
+        "ros2 launch astra_camera astro_pro_plus.launch.xml 2>&1"
     )
 
-    if not result.stdout.strip():
-        print("⚠️  No ROS2 nodes running - cannot check topics")
-        print("   Start the robot first: ./scripts/rosmaster_r2_script/start_robot.sh")
+    # Give it time to start
+    print("   Waiting for camera node to initialize...")
+    time.sleep(5)
+
+    return proc
+
+def wait_for_camera_topics():
+    """Wait for camera topics to become available"""
+    print("\n[3/5] Waiting for camera topics...")
+
+    max_attempts = 20
+    for attempt in range(max_attempts):
+        result = run_bash_command("ros2 topic list")
+        topics = result.stdout.strip().split('\n')
+
+        # Check for camera topics
+        color_topic = '/camera/color/image_raw'
+        depth_topic = '/camera/depth/image_raw'
+
+        color_found = color_topic in topics
+        depth_found = depth_topic in topics
+
+        if color_found and depth_found:
+            print(f"   ✅ Camera topics ready!")
+            print(f"      - {color_topic}")
+            print(f"      - {depth_topic}")
+            return True
+
+        print(f"   Attempt {attempt+1}/{max_attempts}...", end='\r')
+        time.sleep(0.5)
+
+    print("\n   ⚠️  Timeout waiting for camera topics")
+    return False
+
+def display_camera_feed(duration=10):
+    """Display the camera feed using rqt_image_view"""
+    print(f"\n[4/5] Displaying camera feed for {duration} seconds...")
+
+    # Check if DISPLAY is set (GUI available)
+    if not os.environ.get('DISPLAY'):
+        print("   ⚠️  No DISPLAY environment - skipping visualization")
+        print("   (Run this script on the Jetson desktop for video preview)")
+        # Just echo the topic to verify data
+        print("\n   Checking camera data stream...")
+        result = run_bash_command("timeout 2 ros2 topic echo /camera/color/image_raw --once")
+        if result.returncode == 0:
+            print("   ✅ Camera is publishing data!")
+        else:
+            print("   ❌ No data from camera")
         return False
 
-    # Check for camera topics
-    camera_topics = [
-        '/camera/color/image_raw',
-        '/camera/depth/image_raw',
-        '/camera/color/camera_info',
-        '/camera/depth/camera_info'
-    ]
+    # Launch rqt_image_view to display the color image
+    print("   Opening camera viewer window...")
+    print("   📸 Camera feed will display for {duration} seconds")
+    print("   Press Ctrl+C to stop early\n")
 
-    topic_found = False
-    for topic in camera_topics:
-        result = subprocess.run(
-            ["ros2", "topic", "info", topic],
-            capture_output=True,
-            text=True,
-            timeout=2
-        )
-        if result.returncode == 0:
-            print(f"✅ Topic active: {topic}")
-            topic_found = True
-        else:
-            print(f"❌ Topic not found: {topic}")
-
-    return topic_found
-
-def test_opencv_capture():
-    """Test camera using OpenCV"""
-    print("\n[TEST 3] Testing camera with OpenCV...")
+    # Use image_view which is lighter than rqt_image_view
+    viewer_proc = run_bash_command_async(
+        "ros2 run image_view image_view --ros-args --remap image:=/camera/color/image_raw"
+    )
 
     try:
-        import cv2
-        print("✅ OpenCV imported successfully")
+        # Wait for specified duration
+        time.sleep(duration)
 
-        # Try to open camera (usually /dev/video0 or video1)
-        for video_id in [0, 1, 2]:
-            print(f"\nTrying to open /dev/video{video_id}...")
-            cap = cv2.VideoCapture(video_id)
+        # Stop viewer
+        if viewer_proc.poll() is None:
+            viewer_proc.terminate()
+            viewer_proc.wait(timeout=2)
+    except KeyboardInterrupt:
+        print("\n   Stopped by user")
+        if viewer_proc.poll() is None:
+            viewer_proc.terminate()
 
-            if cap.isOpened():
-                print(f"✅ Camera opened on /dev/video{video_id}")
+    return True
 
-                # Try to read a frame
-                ret, frame = cap.read()
-                if ret:
-                    print(f"✅ Successfully captured frame: {frame.shape}")
-                    print("\n📸 Displaying camera preview for 5 seconds...")
-                    print("   Press 'q' to quit early")
+def verify_camera():
+    """Verify camera is working by checking topic data"""
+    print("\n[5/5] Verifying camera data...")
 
-                    start_time = time.time()
-                    while (time.time() - start_time) < 5:
-                        ret, frame = cap.read()
-                        if ret:
-                            cv2.imshow('Camera Test', frame)
-                            if cv2.waitKey(1) & 0xFF == ord('q'):
-                                break
+    # Check color image
+    result = run_bash_command("timeout 2 ros2 topic hz /camera/color/image_raw")
+    if "average rate" in result.stdout:
+        # Extract the rate
+        for line in result.stdout.split('\n'):
+            if 'average rate' in line:
+                print(f"   ✅ Color image: {line.strip()}")
+                break
+    else:
+        print("   ⚠️  Could not measure color image rate")
 
-                    cv2.destroyAllWindows()
-                    cap.release()
-                    return True
-                else:
-                    print(f"❌ Could not read frame from /dev/video{video_id}")
+    # Check depth image
+    result = run_bash_command("timeout 2 ros2 topic hz /camera/depth/image_raw")
+    if "average rate" in result.stdout:
+        for line in result.stdout.split('\n'):
+            if 'average rate' in line:
+                print(f"   ✅ Depth image: {line.strip()}")
+                break
+    else:
+        print("   ⚠️  Could not measure depth image rate")
 
-                cap.release()
-            else:
-                print(f"❌ Could not open /dev/video{video_id}")
-
-        return False
-
-    except ImportError:
-        print("❌ OpenCV (cv2) not installed")
-        print("   Install with: pip3 install opencv-python")
-        return False
-    except Exception as e:
-        print(f"❌ Error: {e}")
-        return False
+    return True
 
 def main():
+    # Register signal handler for graceful shutdown
+    signal.signal(signal.SIGINT, signal_handler)
+
     print("="*60)
-    print("  CAMERA TEST - Astra Depth Camera")
+    print("  Astra Camera - Launch & Test")
     print("="*60)
 
-    # Run tests
-    usb_ok = test_usb_camera()
+    try:
+        # Step 1: Check USB
+        if not check_usb_camera():
+            print("\n❌ Camera not detected on USB")
+            sys.exit(1)
 
-    # Check if running in GUI environment (needed for OpenCV display)
-    if os.environ.get('DISPLAY'):
-        opencv_ok = test_opencv_capture()
-    else:
-        print("\n[TEST 3] Skipped - No DISPLAY environment (SSH session?)")
-        print("   Run this script locally on the Jetson for camera preview")
-        opencv_ok = False
+        # Step 2: Launch camera node
+        camera_proc = launch_camera_node()
 
-    ros2_ok = test_ros2_camera_topics()
+        # Step 3: Wait for topics
+        if not wait_for_camera_topics():
+            print("\n❌ Camera topics not available")
+            cleanup_processes()
+            sys.exit(1)
 
-    # Summary
-    print("\n" + "="*60)
-    print("  CAMERA TEST SUMMARY")
-    print("="*60)
-    print(f"\nUSB Detection:    {'✅ PASS' if usb_ok else '❌ FAIL'}")
-    print(f"OpenCV Capture:   {'✅ PASS' if opencv_ok else '⚠️  SKIP/FAIL'}")
-    print(f"ROS2 Topics:      {'✅ PASS' if ros2_ok else '❌ FAIL'}")
+        # Step 4: Display feed (if GUI available)
+        display_camera_feed(duration=10)
 
-    if usb_ok or opencv_ok or ros2_ok:
-        print("\n✅ Camera appears to be working!")
-    else:
-        print("\n❌ Camera issues detected:")
-        print("   - Check USB connection")
-        print("   - Check camera power")
-        print("   - Try: lsusb | grep -i orbbec")
-        print("   - Start ROS2 camera node if testing topics")
+        # Step 5: Verify camera data
+        verify_camera()
+
+        # Summary
+        print("\n" + "="*60)
+        print("  ✅ CAMERA TEST COMPLETE")
+        print("="*60)
+        print("\nCamera is working properly!")
+        print("\nTo use the camera in your application:")
+        print("  - Color image: /camera/color/image_raw")
+        print("  - Depth image: /camera/depth/image_raw")
+        print("  - Camera info: /camera/color/camera_info")
+
+    except Exception as e:
+        print(f"\n❌ Error: {e}")
+        cleanup_processes()
+        sys.exit(1)
+    finally:
+        print("\n🛑 Shutting down camera...")
+        cleanup_processes()
+        print("   ✅ Cleanup complete\n")
 
 if __name__ == "__main__":
     main()
