@@ -132,7 +132,7 @@ Visualization Manager:
       Size (m): 0.05
       Style: Points
       Topic:
-        Depth: 5
+        Depth: 50
         Durability Policy: Volatile
         History Policy: Keep Last
         Reliability Policy: Best Effort
