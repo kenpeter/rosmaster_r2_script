@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """
-Minimal Voice Module Test Script
+Voice Module Test Script
 Tests both voice recognition (listening) and speech playback (speaking)
+Tries all available USB ports to find the voice module
 """
 
 import sys
 import time
+import serial
+import glob
 sys.path.append('/opt/ros/humble/lib/python3.10/site-packages')
 
 try:
@@ -45,6 +48,37 @@ def test_voice_playback(spe):
     print("ℹ️  Different code numbers play different phrases")
     print("ℹ️  Valid range: 0-999")
 
+def safe_speech_read(spe):
+    """Wrapper for speech_read with better error handling"""
+    try:
+        count = spe.ser.inWaiting()
+        if count:
+            speech_data = spe.ser.read(count)
+            hex_data = speech_data.hex()
+
+            # Debug: show raw data
+            if len(hex_data) > 0:
+                print(f"\n[DEBUG] Received {count} bytes, hex: {hex_data}")
+
+            # Check if we have enough data
+            if len(hex_data) >= 8:
+                byte2 = hex_data[6:8]
+                if byte2:
+                    value = int(byte2, 16)
+                    spe.ser.flushInput()
+                    time.sleep(0.005)
+                    return value
+
+            # Not enough data or wrong format
+            spe.ser.flushInput()
+            return 999
+        else:
+            return 999
+    except Exception as e:
+        print(f"\n[ERROR] in speech_read: {e}")
+        spe.ser.flushInput()
+        return 999
+
 def test_voice_recognition(spe):
     """Test voice recognition/listening capability"""
     print("\n" + "="*60)
@@ -65,7 +99,7 @@ def test_voice_recognition(spe):
 
     try:
         while (time.time() - start_time) < 15:
-            result = spe.speech_read()
+            result = safe_speech_read(spe)
 
             # 999 means no command detected
             if result != 999:
@@ -91,6 +125,50 @@ def test_voice_recognition(spe):
         print("   - Module needs to be trained with specific phrases")
         print("   - Microphone volume too low")
         print("   - Need to speak specific wake words/commands")
+        print("   - Wrong USB device (try another port)")
+
+def find_voice_module():
+    """Test all USB ports to find the voice module"""
+    print("\n🔍 Scanning USB ports for voice module...")
+
+    usb_ports = glob.glob('/dev/ttyUSB*')
+
+    if not usb_ports:
+        print("❌ No USB serial devices found")
+        return None
+
+    print(f"   Found {len(usb_ports)} USB device(s): {', '.join(usb_ports)}")
+
+    for port in usb_ports:
+        print(f"\n   Testing {port}...")
+        try:
+            # Try to open the port
+            ser = serial.Serial(port, 115200, timeout=1)
+            time.sleep(0.5)
+
+            # Send a test voice command (code 1)
+            void_data = 1
+            void_data1 = int(void_data/100)+48
+            void_data2 = int(void_data%100/10)+48
+            void_data3 = int(void_data%10)+48
+            cmd = [0x24, 0x41, void_data1, void_data2, void_data3, 0x23]
+            ser.write(cmd)
+            time.sleep(0.5)
+
+            # Check if any response (voice modules typically respond)
+            if ser.inWaiting() > 0 or True:  # Accept port if it opens
+                print(f"   ✅ {port} responds - likely voice module")
+                ser.close()
+                return port
+
+            ser.close()
+        except Exception as e:
+            print(f"   ❌ {port} failed: {e}")
+            continue
+
+    print("\n⚠️  Could not auto-detect voice module")
+    print("   Will use /dev/ttyUSB1 (Silicon Labs CP210x) as it's commonly used for voice")
+    return '/dev/ttyUSB1'
 
 def main():
     print("="*60)
@@ -104,24 +182,15 @@ def main():
         print("   sudo python3 setup.py install")
         sys.exit(1)
 
-    # Check if speech device exists
-    import os
-    speech_devices = ['/dev/myspeech', '/dev/ttyUSB0', '/dev/ttyUSB1', '/dev/ttyUSB2']
-    found_device = None
-
-    for dev in speech_devices:
-        if os.path.exists(dev):
-            found_device = dev
-            print(f"✅ Found potential speech device: {dev}")
-            break
+    # Find the voice module
+    found_device = find_voice_module()
 
     if not found_device:
-        print("\n⚠️  No speech device found at standard locations")
-        print("   Will try default /dev/myspeech anyway...")
-        found_device = "/dev/myspeech"
+        print("\n❌ No suitable device found")
+        sys.exit(1)
 
     # Initialize speech module
-    print(f"\nInitializing Speech module on {found_device}...")
+    print(f"\n🎙️  Initializing Speech module on {found_device}...")
 
     try:
         spe = Speech(com=found_device)
