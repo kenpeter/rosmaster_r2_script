@@ -5,8 +5,6 @@ ONE SCRIPT TO SHOW 3D WORLD
 Run this to see your 3D colored world visualization!
 
 Tries RGB-D camera first (REAL 3D), falls back to LiDAR+Camera fusion if needed.
-
-Usage: python3 show_3d_world.py
 """
 
 import os
@@ -14,6 +12,7 @@ import sys
 import subprocess
 import time
 from pathlib import Path
+from ament_index_python.packages import get_package_share_directory
 
 # Colors for terminal output
 GREEN = '\033[0;32m'
@@ -43,7 +42,7 @@ def check_camera():
     print(f"{YELLOW}🔍 Checking for RGB-D camera...{NC}")
 
     result = subprocess.run(
-        "lsusb | grep -i 'orbbec\\|astra\\|primesense'",
+        "lsusb | grep -i 'orbbec\|astra\|primesense'",
         shell=True,
         capture_output=True,
         text=True
@@ -78,9 +77,10 @@ def build_packages():
     print(f"{GREEN}✓ Packages ready{NC}")
     return True
 
-def create_rviz_config():
+def create_rviz_config(pointcloud_topic="/colored_pointcloud", fixed_frame="camera_link"):
     """Create RViz configuration for 3D visualization"""
-    config = """Panels:
+    config = f"""
+Panels:
   - Class: rviz_common/Displays
     Name: Displays
   - Class: rviz_common/Views
@@ -108,7 +108,7 @@ Visualization Manager:
       Name: Colored 3D World
       Position Transformer: XYZ
       Selectable: true
-      Size (Pixels): 3
+      Size (Pixels): 5
       Size (m): 0.02
       Style: Points
       Topic:
@@ -116,7 +116,7 @@ Visualization Manager:
         Durability Policy: Volatile
         History Policy: Keep Last
         Reliability Policy: Best Effort
-        Value: /colored_pointcloud
+        Value: {pointcloud_topic}
       Use Fixed Frame: true
       Value: true
     - Alpha: 1
@@ -142,7 +142,7 @@ Visualization Manager:
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48
-    Fixed Frame: laser
+    Fixed Frame: {fixed_frame}
     Frame Rate: 30
   Name: root
   Tools:
@@ -153,7 +153,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 5
+      Distance: 3
       Enable Stereo Rendering:
         Value: false
       Focal Point:
@@ -176,11 +176,85 @@ Visualization Manager:
         f.write(config)
     return str(config_file)
 
+def launch_fusion_3d(rviz_config):
+    """Launch complete robot + LiDAR + Camera fusion for colored 3D point cloud"""
+    calib_file = WORKSPACE / "src/lidar_camera_fusion/config/default_calibration.yaml"
+
+    launch_content = f"""
+from launch import LaunchDescription
+from launch_ros.actions import Node
+from launch.actions import IncludeLaunchDescription
+from launch.launch_description_sources import PythonLaunchDescriptionSource
+from ament_index_python.packages import get_package_share_directory
+import os
+
+def generate_launch_description():
+    # Include the full robot system
+    robot_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource([
+            os.path.join(get_package_share_directory('yahboomcar_bringup'), 'launch'),
+            '/yahboomcar_bringup_R2_full_launch.py'
+        ])
+    )
+
+    # LaserScan to PointCloud2 converter
+    laser_to_pc = Node(
+        package='lidar_camera_fusion',
+        executable='laser_to_pointcloud',
+        name='laser_to_pointcloud',
+        parameters=[{{
+            'scan_topic': '/scan',
+            'pointcloud_topic': '/lidar_pointcloud',
+            'fixed_frame': 'laser_link',
+            'height_offset': 0.15,
+        }}],
+        output='screen'
+    )
+
+    # LiDAR-Camera fusion for colored point cloud
+    fusion = Node(
+        package='lidar_camera_fusion',
+        executable='lidar_camera_fusion_node',
+        name='lidar_camera_fusion',
+        parameters=[{{
+            'pointcloud_topic': '/lidar_pointcloud',
+            'image_topic': '/camera/color/image_raw',
+            'output_topic': '/colored_pointcloud',
+            'calibration_file': '{calib_file}',
+            'camera_frame': 'camera_link',
+            'lidar_frame': 'laser_link',
+        }}],
+        output='screen'
+    )
+
+    # RViz visualization
+    rviz = Node(
+        package='rviz2',
+        executable='rviz2',
+        name='rviz2',
+        arguments=['-d', '{rviz_config}'],
+        output='screen'
+    )
+
+    return LaunchDescription([
+        robot_launch,
+        laser_to_pc,
+        fusion,
+        rviz,
+    ])
+"""
+
+    temp_launch = "/tmp/show_3d_world_fusion.launch.py"
+    with open(temp_launch, 'w') as f:
+        f.write(launch_content)
+
+    return temp_launch
+
 def launch_lidar_fusion(rviz_config):
     """Launch LiDAR + Camera fusion system"""
     calib_file = WORKSPACE / "src/lidar_camera_fusion/config/default_calibration.yaml"
 
-    launch_content = f'''
+    launch_content = f"""
 from launch import LaunchDescription
 from launch_ros.actions import Node
 from launch.actions import IncludeLaunchDescription
@@ -239,9 +313,9 @@ def generate_launch_description():
         fusion,
         rviz,
     ])
-'''
+"""
 
-    temp_launch = "/tmp/show_3d_world.launch.py"
+    temp_launch = "/tmp/show_3d_world_lidar.launch.py"
     with open(temp_launch, 'w') as f:
         f.write(launch_content)
 
@@ -258,35 +332,33 @@ def main():
     # Check for camera
     has_camera = check_camera()
 
-    # Create RViz config
+    print(f"\n{GREEN}🎨 Launching LiDAR + Camera Fusion 3D Visualization{NC}")
+
+    # Create RViz config for fusion
     print(f"\n{YELLOW}⚙️  Creating visualization config...{NC}")
-    rviz_config = create_rviz_config()
+    rviz_config = create_rviz_config(pointcloud_topic="/colored_pointcloud", fixed_frame="camera_link")
     print(f"{GREEN}✓ Config ready{NC}")
 
     # Create launch file
     print(f"\n{YELLOW}🚀 Preparing launch system...{NC}")
-    launch_file = launch_lidar_fusion(rviz_config)
+    launch_file = launch_fusion_3d(rviz_config)
+    print(f"{GREEN}✓ Launch file ready: {launch_file}{NC}")
 
     # Show what will launch
     print(f"\n{BLUE}═══════════════════════════════════════════════════════════════{NC}")
-    print(f"{BOLD}{GREEN}Starting 3D World Visualization{NC}")
+    print(f"{BOLD}{GREEN}Starting 3D World Visualization - FULL SYSTEM{NC}")
     print(f"{BLUE}═══════════════════════════════════════════════════════════════{NC}\n")
-    print("This will show:")
-    print(f"  {GREEN}✓{NC} YDLIDAR TG30 (360° scanning)")
-    print(f"  {GREEN}✓{NC} 3D Point Cloud visualization")
-    print(f"  {GREEN}✓{NC} Colored points (when camera connected)")
+    print("This will launch:")
+    print(f"  {GREEN}✓{NC} R2 Robot Hardware (Ackermann steering)")
+    print(f"  {GREEN}✓{NC} YDLiDAR (360° scanning)")
+    print(f"  {GREEN}✓{NC} Astra Plus Camera (RGB + Depth)")
+    print(f"  {GREEN}✓{NC} IMU + EKF Sensor Fusion")
+    print(f"  {GREEN}✓{NC} LiDAR to PointCloud converter")
+    print(f"  {GREEN}✓{NC} Camera-LiDAR Fusion (colored points)")
     print(f"  {GREEN}✓{NC} RViz 3D viewer")
-    print(f"\n{BLUE}═══════════════════════════════════════════════════════════════{NC}\n")
-
-    if has_camera:
-        print(f"{GREEN}🎨 Camera detected - you'll see colored 3D points!{NC}\n")
-    else:
-        print(f"{YELLOW}⚠  No camera detected - will show white points{NC}")
-        print(f"{YELLOW}   Connect camera to see colors!{NC}\n")
-
-    print(f"{BOLD}{YELLOW}What you'll see in RViz:{NC}")
-    print(f"  🌍 {BOLD}3D Point Cloud{NC} - The colored 3D world")
-    print(f"  📡 Red LiDAR scan - Raw sensor data")
+    print(f"\n{BOLD}{YELLOW}What you'll see in RViz:{NC}")
+    print(f"  🌍 {BOLD}Colored 3D Point Cloud{NC} - LiDAR points with camera colors")
+    print(f"  📡 Red LiDAR scan - Raw 2D sensor data")
     print(f"  📏 Grid - Reference floor\n")
 
     print(f"{GREEN}🚀 Launching now...{NC}\n")
@@ -294,13 +366,18 @@ def main():
 
     # Launch the system
     os.chdir(WORKSPACE)
-    cmd = f"source /opt/ros/humble/setup.bash && source install/setup.bash && ros2 launch {launch_file}"
+    cmd = f"source /opt/ros/humble/setup.bash && source /home/jetson/yahboomcar_ros2_ws/software/library_ws/install/setup.bash && source install/setup.bash && export ROS_DOMAIN_ID=28 && ros2 launch {launch_file}"
 
     try:
-        subprocess.run(cmd, shell=True, executable='/bin/bash')
+        subprocess.run(cmd, shell=True, executable='/bin/bash', check=True)
     except KeyboardInterrupt:
         print(f"\n{YELLOW}Shutting down...{NC}")
         sys.exit(0)
+    except subprocess.CalledProcessError as e:
+        print(f"\n{RED}✗ Launch failed: {e}{NC}")
+        print(f"{RED}  Please check the output above for errors from ROS2 nodes.{NC}")
+        sys.exit(1)
+
 
 if __name__ == '__main__':
     main()

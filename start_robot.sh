@@ -81,6 +81,8 @@ echo ""
 echo -e "${YELLOW}Step 3: Loading ROS2 environment...${NC}"
 
 source /opt/ros/humble/setup.bash
+# Source library workspace first (contains robot_localization)
+source /home/jetson/yahboomcar_ros2_ws/software/library_ws/install/setup.bash
 cd "$WORKSPACE_ROOT"
 source install/setup.bash
 export ROS_DOMAIN_ID=28
