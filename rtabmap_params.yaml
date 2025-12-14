@@ -1,0 +1,30 @@
+/**:
+  ros__parameters:
+    frame_id: "base_link"
+    map_frame_id: "map"
+    use_sim_time: false
+    subscribe_depth: true
+    subscribe_rgb: true
+    subscribe_scan: true
+    approx_sync: true
+    queue_size: 10
+
+    # Odometry parameters
+    Odom/Strategy: "0"       # 0=Frame-to-frame
+    Vis/EstimationType: "0"  # 0=3D->2D (PnP)
+    Vis/MinInliers: "15"
+    Vis/MaxFeatures: "600"
+    Vis/CorType: "0"         # 0=Features
+
+    # SLAM (graph optimization) parameters
+    Reg/Strategy: "1"        # 1=Visual
+    Reg/Force3DoF: "true"
+
+    # ICP parameters (if Reg/Strategy=2)
+    Icp/VoxelSize: "0.05"
+    Icp/MaxCorrespondenceDistance: "0.1"
+
+    # 3D map generation
+    Grid/FromDepth: "true"
+    Grid/RangeMax: "4.0"
+    Grid/VoxelSize: "0.05"
