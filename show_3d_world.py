@@ -3,16 +3,16 @@
 ONE SCRIPT TO SHOW 3D WORLD
 ============================
 Run this to see your 3D colored world visualization!
-
-Tries RGB-D camera first (REAL 3D), falls back to LiDAR+Camera fusion if needed.
+Uses RGB-D camera (no LiDAR needed!)
 """
 
 import os
 import sys
 import subprocess
 import time
+import signal
+import threading
 from pathlib import Path
-from ament_index_python.packages import get_package_share_directory
 
 # Colors for terminal output
 GREEN = '\033[0;32m'
@@ -24,6 +24,74 @@ NC = '\033[0m'
 
 WORKSPACE = Path("/home/jetson/yahboomcar_ros2_ws/yahboomcar_ws")
 
+# Global process handles
+pointcloud_process = None
+rviz_process = None
+monitor_thread = None
+stop_monitoring = False
+
+def monitor_pointcloud_output():
+    """Monitor point cloud node output in background"""
+    global pointcloud_process, stop_monitoring
+    import select
+
+    while not stop_monitoring and pointcloud_process:
+        if pointcloud_process.poll() is not None:
+            break
+
+        if pointcloud_process.stdout:
+            ready = select.select([pointcloud_process.stdout], [], [], 0.5)
+            if ready[0]:
+                line = pointcloud_process.stdout.readline()
+                if line:
+                    # Print node output with timestamp
+                    timestamp = time.strftime("%H:%M:%S")
+                    print(f"{BLUE}[{timestamp}] PCL Node:{NC} {line.rstrip()}")
+
+def cleanup(signum=None, frame=None):
+    """Clean up processes on exit"""
+    global pointcloud_process, rviz_process, stop_monitoring, monitor_thread
+    print(f"\n{YELLOW}Shutting down...{NC}")
+
+    stop_monitoring = True
+    if monitor_thread:
+        monitor_thread.join(timeout=2)
+
+    if pointcloud_process:
+        pointcloud_process.terminate()
+        pointcloud_process.wait(timeout=2)
+    if rviz_process:
+        rviz_process.terminate()
+        rviz_process.wait(timeout=2)
+
+    sys.exit(0)
+
+signal.signal(signal.SIGINT, cleanup)
+signal.signal(signal.SIGTERM, cleanup)
+
+def run_ros_cmd(cmd, timeout_sec=2, capture=True):
+    """Run a ROS command with proper environment"""
+    full_cmd = f"source /opt/ros/humble/setup.bash && export ROS_DOMAIN_ID=28 && {cmd}"
+
+    if capture:
+        result = subprocess.run(
+            full_cmd,
+            shell=True,
+            executable='/bin/bash',
+            capture_output=True,
+            text=True,
+            timeout=timeout_sec
+        )
+        return result
+    else:
+        subprocess.run(
+            full_cmd,
+            shell=True,
+            executable='/bin/bash',
+            timeout=timeout_sec
+        )
+        return None
+
 def print_header():
     """Print welcome banner"""
     os.system('clear')
@@ -33,351 +101,465 @@ def print_header():
     print("║         🌍  3D WORLD VISUALIZATION  🌍                        ║")
     print("║                                                               ║")
     print("║         Your ONE script for 3D colored world!                ║")
+    print("║                (RGB-D camera only - no LiDAR needed!)        ║")
     print("║                                                               ║")
     print("╚═══════════════════════════════════════════════════════════════╝")
     print(f"{NC}\n")
 
-def check_camera():
+def check_camera_hardware():
     """Check if Astra camera is available"""
-    print(f"{YELLOW}🔍 Checking for RGB-D camera...{NC}")
+    print(f"{YELLOW}[1/6] Checking camera hardware...{NC}")
 
     result = subprocess.run(
-        "lsusb | grep -i 'orbbec\|astra\|primesense'",
+        "lsusb | grep -i 'orbbec'",
         shell=True,
         capture_output=True,
         text=True
     )
 
     if result.returncode == 0:
-        print(f"{GREEN}✓ RGB-D camera found: {result.stdout.strip()}{NC}")
+        print(f"{GREEN}✓ Orbbec Astra camera detected{NC}")
         return True
     else:
-        print(f"{YELLOW}⚠ No RGB-D camera detected{NC}")
+        print(f"{RED}✗ Camera NOT detected!{NC}")
+        print(f"{YELLOW}  Please check USB connection{NC}")
         return False
 
-def build_packages():
-    """Build required packages"""
-    print(f"\n{YELLOW}📦 Checking packages...{NC}")
+def check_camera_node():
+    """Check if camera node is running"""
+    print(f"\n{YELLOW}[2/6] Checking camera node...{NC}")
 
-    # Check if fusion package exists
-    fusion_build = WORKSPACE / "build/lidar_camera_fusion"
+    try:
+        result = run_ros_cmd("timeout 2 ros2 node list 2>/dev/null", timeout_sec=5)
 
-    if not fusion_build.exists():
-        print(f"{YELLOW}Building lidar_camera_fusion (first time)...{NC}")
-        os.chdir(WORKSPACE)
-        result = subprocess.run(
-            "source /opt/ros/humble/setup.bash && colcon build --packages-select lidar_camera_fusion",
-            shell=True,
-            executable='/bin/bash'
-        )
-        if result.returncode != 0:
-            print(f"{RED}✗ Build failed{NC}")
+        if result and "/camera/camera" in result.stdout:
+            print(f"{GREEN}✓ Camera node is running{NC}")
+            return True
+        else:
+            print(f"{RED}✗ Camera node NOT running!{NC}")
+            print(f"{YELLOW}  Please run: ./start_robot.sh{NC}")
+            return False
+    except:
+        print(f"{RED}✗ Failed to check nodes{NC}")
+        return False
+
+def check_camera_topics():
+    """Check if camera topics exist"""
+    print(f"\n{YELLOW}[3/6] Checking camera topics...{NC}")
+
+    try:
+        result = run_ros_cmd("timeout 2 ros2 topic list 2>/dev/null", timeout_sec=5)
+
+        if not result:
             return False
 
-    print(f"{GREEN}✓ Packages ready{NC}")
+        topics = result.stdout
+
+        has_color = "/camera/color/image_raw" in topics
+        has_depth = "/camera/depth/image_raw" in topics
+        has_color_info = "/camera/color/camera_info" in topics
+        has_depth_info = "/camera/depth/camera_info" in topics
+
+        if has_color:
+            print(f"{GREEN}✓ Color image topic exists{NC}")
+        else:
+            print(f"{RED}✗ Color image topic missing{NC}")
+
+        if has_depth:
+            print(f"{GREEN}✓ Depth image topic exists{NC}")
+        else:
+            print(f"{RED}✗ Depth image topic missing{NC}")
+
+        if has_color_info:
+            print(f"{GREEN}✓ Color camera_info topic exists{NC}")
+        else:
+            print(f"{RED}✗ Color camera_info topic missing{NC}")
+
+        if has_depth_info:
+            print(f"{GREEN}✓ Depth camera_info topic exists{NC}")
+        else:
+            print(f"{RED}✗ Depth camera_info topic missing{NC}")
+
+        return has_color and has_depth and has_color_info and has_depth_info
+    except:
+        print(f"{RED}✗ Failed to check topics{NC}")
+        return False
+
+def check_camera_publishing():
+    """Check if camera is ACTUALLY publishing data (critical test!)"""
+    print(f"\n{YELLOW}[4/6] Testing if camera is PUBLISHING data...{NC}")
+    print(f"{YELLOW}    (This is the most important test!){NC}")
+
+    # Test color image
+    print(f"  - Color image: ", end="", flush=True)
+    try:
+        result = run_ros_cmd("timeout 3 ros2 topic echo /camera/color/image_raw --once >/dev/null 2>&1", timeout_sec=5)
+        if result.returncode == 0:
+            print(f"{GREEN}✓ PUBLISHING{NC}")
+            color_ok = True
+        else:
+            print(f"{RED}✗ NOT PUBLISHING{NC}")
+            color_ok = False
+    except:
+        print(f"{RED}✗ TIMEOUT{NC}")
+        color_ok = False
+
+    # Test depth image
+    print(f"  - Depth image: ", end="", flush=True)
+    try:
+        result = run_ros_cmd("timeout 3 ros2 topic echo /camera/depth/image_raw --once >/dev/null 2>&1", timeout_sec=5)
+        if result.returncode == 0:
+            print(f"{GREEN}✓ PUBLISHING{NC}")
+            depth_ok = True
+        else:
+            print(f"{RED}✗ NOT PUBLISHING{NC}")
+            depth_ok = False
+    except:
+        print(f"{RED}✗ TIMEOUT{NC}")
+        depth_ok = False
+
+    if not color_ok or not depth_ok:
+        print(f"\n{RED}════════════════════════════════════════════════════{NC}")
+        print(f"{RED}{BOLD}  CAMERA IS NOT PUBLISHING DATA!{NC}")
+        print(f"{RED}════════════════════════════════════════════════════{NC}")
+        print(f"\n{YELLOW}The camera node is running but not streaming.{NC}")
+        print(f"{YELLOW}This usually means the camera node is stuck/crashed.{NC}")
+        print(f"\n{BOLD}To fix this:{NC}")
+        print("  1. Stop this script (Ctrl+C)")
+        print("  2. Kill all robot processes:")
+        print(f"     {BOLD}killall -9 python3 bash{NC}")
+        print("  3. Wait 5 seconds")
+        print("  4. Restart the robot:")
+        print(f"     {BOLD}./start_robot.sh{NC}")
+        print("  5. Wait 10 seconds for camera to initialize")
+        print("  6. Run this script again")
+        print("")
+        return False
+
+    print(f"{GREEN}✓ Camera is publishing data!{NC}")
     return True
 
-def create_rviz_config(pointcloud_topic="/colored_pointcloud", fixed_frame="camera_link"):
-    """Create RViz configuration for 3D visualization"""
-    config = f"""
-Panels:
-  - Class: rviz_common/Displays
-    Name: Displays
-  - Class: rviz_common/Views
-    Name: Views
-Visualization Manager:
-  Class: ""
-  Displays:
-    - Alpha: 0.5
-      Cell Size: 1
-      Class: rviz_default_plugins/Grid
-      Color: 160; 160; 164
-      Enabled: true
-      Name: Grid
-      Plane: XY
-      Plane Cell Count: 20
-      Reference Frame: <Fixed Frame>
-      Value: true
-    - Alpha: 1
-      Autocompute Intensity Bounds: true
-      Class: rviz_default_plugins/PointCloud2
-      Color: 255; 255; 255
-      Color Transformer: RGB8
-      Decay Time: 0
-      Enabled: true
-      Name: Colored 3D World
-      Position Transformer: XYZ
-      Selectable: true
-      Size (Pixels): 5
-      Size (m): 0.02
-      Style: Points
-      Topic:
-        Depth: 5
-        Durability Policy: Volatile
-        History Policy: Keep Last
-        Reliability Policy: Best Effort
-        Value: {pointcloud_topic}
-      Use Fixed Frame: true
-      Value: true
-    - Alpha: 1
-      Autocompute Intensity Bounds: true
-      Class: rviz_default_plugins/LaserScan
-      Color: 255; 0; 0
-      Decay Time: 0
-      Enabled: true
-      Name: LiDAR Scan
-      Position Transformer: XYZ
-      Selectable: true
-      Size (Pixels): 5
-      Size (m): 0.05
-      Style: Points
-      Topic:
-        Depth: 50
-        Durability Policy: Volatile
-        History Policy: Keep Last
-        Reliability Policy: Best Effort
-        Value: /scan
-      Use Fixed Frame: true
-      Value: true
-  Enabled: true
-  Global Options:
-    Background Color: 48; 48; 48
-    Fixed Frame: {fixed_frame}
-    Frame Rate: 30
-  Name: root
-  Tools:
-    - Class: rviz_default_plugins/Interact
-    - Class: rviz_default_plugins/MoveCamera
-    - Class: rviz_default_plugins/Select
-  Value: true
-  Views:
-    Current:
-      Class: rviz_default_plugins/Orbit
-      Distance: 3
-      Enable Stereo Rendering:
-        Value: false
-      Focal Point:
-        X: 0
-        Y: 0
-        Z: 0
-      Focal Shape Size: 0.05
-      Invert Z Axis: false
-      Name: Current View
-      Near Clip Distance: 0.01
-      Pitch: 0.5
-      Target Frame: <Fixed Frame>
-      Value: Orbit (rviz)
-      Yaw: 3.14
-    Saved: ~
+def launch_pointcloud_node():
+    """Launch the colored point cloud generator"""
+    global pointcloud_process
+
+    print(f"\n{YELLOW}[5/6] Launching colored point cloud generator...{NC}")
+
+    # Kill any existing instances
+    subprocess.run("pkill -f 'point_cloud_xyzrgb' 2>/dev/null", shell=True)
+    time.sleep(1)
+
+    # Launch depth_image_proc point cloud node with logging
+    cmd = """
+source /opt/ros/humble/setup.bash
+source /home/jetson/yahboomcar_ros2_ws/software/library_ws/install/setup.bash
+cd /home/jetson/yahboomcar_ros2_ws/yahboomcar_ws
+source install/setup.bash
+export ROS_DOMAIN_ID=28
+export RCUTILS_CONSOLE_OUTPUT_FORMAT="[{severity}] [{name}]: {message}"
+
+ros2 run depth_image_proc point_cloud_xyzrgb_node \
+    --ros-args \
+    -r rgb/image_rect_color:=/camera/color/image_raw \
+    -r rgb/camera_info:=/camera/color/camera_info \
+    -r depth_registered/image_rect:=/camera/depth/image_raw \
+    -r depth_registered/camera_info:=/camera/depth/camera_info \
+    -r points:=/camera/depth/color/points \
+    -p queue_size:=10 \
+    -p exact_sync:=false \
+    --log-level DEBUG
 """
 
-    config_file = WORKSPACE / "scripts/3d_world.rviz"
-    with open(config_file, 'w') as f:
-        f.write(config)
-    return str(config_file)
-
-def launch_fusion_3d(rviz_config):
-    """Launch complete robot + LiDAR + Camera fusion for colored 3D point cloud"""
-    calib_file = WORKSPACE / "src/lidar_camera_fusion/config/default_calibration.yaml"
-
-    launch_content = f"""
-from launch import LaunchDescription
-from launch_ros.actions import Node
-from launch.actions import IncludeLaunchDescription
-from launch.launch_description_sources import PythonLaunchDescriptionSource
-from ament_index_python.packages import get_package_share_directory
-import os
-
-def generate_launch_description():
-    # Include the full robot system
-    robot_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource([
-            os.path.join(get_package_share_directory('yahboomcar_bringup'), 'launch'),
-            '/yahboomcar_bringup_R2_full_launch.py'
-        ])
+    pointcloud_process = subprocess.Popen(
+        cmd,
+        shell=True,
+        executable='/bin/bash',
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1
     )
 
-    # LaserScan to PointCloud2 converter
-    laser_to_pc = Node(
-        package='lidar_camera_fusion',
-        executable='laser_to_pointcloud',
-        name='laser_to_pointcloud',
-        parameters=[{{
-            'scan_topic': '/scan',
-            'pointcloud_topic': '/lidar_pointcloud',
-            'fixed_frame': 'laser_link',
-            'height_offset': 0.15,
-        }}],
-        output='screen'
-    )
+    print(f"{GREEN}✓ Point cloud node launched (PID: {pointcloud_process.pid}){NC}")
 
-    # LiDAR-Camera fusion for colored point cloud
-    fusion = Node(
-        package='lidar_camera_fusion',
-        executable='lidar_camera_fusion_node',
-        name='lidar_camera_fusion',
-        parameters=[{{
-            'pointcloud_topic': '/lidar_pointcloud',
-            'image_topic': '/camera/color/image_raw',
-            'output_topic': '/colored_pointcloud',
-            'calibration_file': '{calib_file}',
-            'camera_frame': 'camera_link',
-            'lidar_frame': 'laser_link',
-        }}],
-        output='screen'
-    )
+    # Show initial output
+    print(f"{BLUE}Node output:{NC}")
+    time.sleep(2)
 
-    # RViz visualization
-    rviz = Node(
-        package='rviz2',
-        executable='rviz2',
-        name='rviz2',
-        arguments=['-d', '{rviz_config}'],
-        output='screen'
-    )
+    # Read some initial output
+    import select
+    if pointcloud_process.stdout:
+        for _ in range(20):  # Read up to 20 lines or 1 second
+            ready = select.select([pointcloud_process.stdout], [], [], 0.05)
+            if ready[0]:
+                line = pointcloud_process.stdout.readline()
+                if line:
+                    print(f"  {line.rstrip()}")
+            else:
+                break
 
-    return LaunchDescription([
-        robot_launch,
-        laser_to_pc,
-        fusion,
-        rviz,
-    ])
+    # Verify it's running
+    if pointcloud_process.poll() is not None:
+        print(f"{RED}✗ Point cloud node crashed!{NC}")
+        # Print any error output
+        if pointcloud_process.stdout:
+            output = pointcloud_process.stdout.read()
+            if output:
+                print(f"{RED}Error output:{NC}")
+                print(output)
+        return False
+
+    return True
+
+def verify_pointcloud():
+    """Verify colored point cloud is being published"""
+    print(f"\n{YELLOW}[6/6] Verifying colored point cloud...{NC}")
+
+    # Wait for topic to appear
+    print(f"  Waiting for /camera/depth/color/points topic...", end="", flush=True)
+    for i in range(10):
+        try:
+            result = run_ros_cmd("timeout 2 ros2 topic list 2>/dev/null", timeout_sec=4)
+            if result and "/camera/depth/color/points" in result.stdout:
+                print(f" {GREEN}✓{NC}")
+                break
+        except:
+            pass
+        print(".", end="", flush=True)
+        time.sleep(1)
+    else:
+        print(f" {RED}✗{NC}")
+        print(f"{RED}Failed to create colored point cloud topic{NC}")
+        # Show node output for debugging
+        print(f"\n{YELLOW}Checking node output for errors...{NC}")
+        if pointcloud_process and pointcloud_process.stdout:
+            import select
+            for _ in range(10):
+                ready = select.select([pointcloud_process.stdout], [], [], 0.1)
+                if ready[0]:
+                    line = pointcloud_process.stdout.readline()
+                    if line:
+                        print(f"  {line.rstrip()}")
+        return False
+
+    # Get topic info
+    print(f"\n  {BLUE}Topic info:{NC}")
+    try:
+        result = run_ros_cmd("timeout 2 ros2 topic info /camera/depth/color/points 2>/dev/null", timeout_sec=4)
+        if result:
+            for line in result.stdout.split('\n'):
+                if line.strip():
+                    print(f"    {line}")
+    except:
+        pass
+
+    # Check message type
+    print(f"\n  {BLUE}Message type:{NC}")
+    try:
+        result = run_ros_cmd("timeout 2 ros2 topic type /camera/depth/color/points 2>/dev/null", timeout_sec=4)
+        if result:
+            print(f"    {result.stdout.strip()}")
+    except:
+        pass
+
+    # Check publishing rate
+    print(f"\n  {BLUE}Publishing rate:{NC}", end="", flush=True)
+    try:
+        result = run_ros_cmd("timeout 5 ros2 topic hz /camera/depth/color/points 2>&1", timeout_sec=7)
+        if result:
+            # Extract rate info
+            for line in result.stdout.split('\n'):
+                if 'average rate' in line.lower():
+                    print(f" {line.strip()}")
+                    break
+            else:
+                print(f" {YELLOW}Unable to measure{NC}")
+    except:
+        print(f" {YELLOW}Timeout{NC}")
+
+    # Check if publishing
+    print(f"\n  {BLUE}Checking if point cloud data is publishing...{NC}", end="", flush=True)
+    try:
+        result = run_ros_cmd("timeout 5 ros2 topic echo /camera/depth/color/points --once >/dev/null 2>&1", timeout_sec=7)
+        if result.returncode == 0:
+            print(f" {GREEN}✓ YES! Data is flowing!{NC}")
+
+            # Try to get a sample of the data
+            print(f"\n  {BLUE}Sample point cloud data (first few points):{NC}")
+            result = run_ros_cmd("timeout 3 ros2 topic echo /camera/depth/color/points --once 2>/dev/null | head -30", timeout_sec=5)
+            if result and result.stdout:
+                print(f"    {result.stdout[:500]}...")
+
+            return True
+        else:
+            print(f" {YELLOW}⚠ Not yet publishing{NC}")
+
+            # Show more node output
+            print(f"\n  {YELLOW}Node output (checking for issues):{NC}")
+            if pointcloud_process and pointcloud_process.stdout:
+                import select
+                for _ in range(20):
+                    ready = select.select([pointcloud_process.stdout], [], [], 0.1)
+                    if ready[0]:
+                        line = pointcloud_process.stdout.readline()
+                        if line:
+                            print(f"    {line.rstrip()}")
+
+            return True  # Still OK, might just need more time
+    except Exception as e:
+        print(f" {YELLOW}⚠ Timeout: {e}{NC}")
+        return True
+
+def launch_rviz():
+    """Launch RViz visualization"""
+    global rviz_process
+
+    print(f"\n{YELLOW}Launching RViz...{NC}")
+
+    # Make sure RViz config exists
+    rviz_config = WORKSPACE / "scripts/3d_world.rviz"
+    if not rviz_config.exists():
+        print(f"{RED}✗ RViz config not found at {rviz_config}{NC}")
+        return False
+
+    cmd = f"""
+source /opt/ros/humble/setup.bash
+source /home/jetson/yahboomcar_ros2_ws/software/library_ws/install/setup.bash
+cd /home/jetson/yahboomcar_ros2_ws/yahboomcar_ws
+source install/setup.bash
+export ROS_DOMAIN_ID=28
+export DISPLAY=:0
+
+rviz2 -d {rviz_config}
 """
 
-    temp_launch = "/tmp/show_3d_world_fusion.launch.py"
-    with open(temp_launch, 'w') as f:
-        f.write(launch_content)
-
-    return temp_launch
-
-def launch_lidar_fusion(rviz_config):
-    """Launch LiDAR + Camera fusion system"""
-    calib_file = WORKSPACE / "src/lidar_camera_fusion/config/default_calibration.yaml"
-
-    launch_content = f"""
-from launch import LaunchDescription
-from launch_ros.actions import Node
-from launch.actions import IncludeLaunchDescription
-from launch.launch_description_sources import PythonLaunchDescriptionSource
-
-def generate_launch_description():
-    # LiDAR
-    lidar_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            '/home/jetson/yahboomcar_ros2_ws/yahboomcar_ws/install/my_ydlidar_ros2_driver/share/my_ydlidar_ros2_driver/launch/ydlidar_launch.py'
-        )
+    rviz_process = subprocess.Popen(
+        cmd,
+        shell=True,
+        executable='/bin/bash',
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE
     )
 
-    # LaserScan to PointCloud2 converter
-    laser_to_pc = Node(
-        package='lidar_camera_fusion',
-        executable='laser_to_pointcloud',
-        name='laser_to_pointcloud',
-        parameters=[{{
-            'scan_topic': '/scan',
-            'pointcloud_topic': '/lidar_pointcloud',
-            'fixed_frame': 'laser',
-            'height_offset': 0.15,
-        }}],
-        output='screen'
-    )
+    print(f"{GREEN}✓ RViz started (PID: {rviz_process.pid}){NC}")
+    return True
 
-    # LiDAR-Camera fusion for colorization
-    fusion = Node(
-        package='lidar_camera_fusion',
-        executable='lidar_camera_fusion_node',
-        name='lidar_camera_fusion',
-        parameters=[{{
-            'pointcloud_topic': '/lidar_pointcloud',
-            'image_topic': '/camera/color/image_raw',
-            'output_topic': '/colored_pointcloud',
-            'calibration_file': '{calib_file}',
-            'camera_frame': 'camera_link',
-            'lidar_frame': 'laser',
-        }}],
-        output='screen'
-    )
+def print_success():
+    """Print success message"""
+    global monitor_thread, stop_monitoring
 
-    # RViz visualization
-    rviz = Node(
-        package='rviz2',
-        executable='rviz2',
-        name='rviz2',
-        arguments=['-d', '{rviz_config}'],
-        output='screen'
-    )
+    print(f"\n{GREEN}{BOLD}═══════════════════════════════════════════════════════════{NC}")
+    print(f"{GREEN}{BOLD}  SUCCESS! Colored 3D point cloud is running!{NC}")
+    print(f"{GREEN}{BOLD}═══════════════════════════════════════════════════════════{NC}")
 
-    return LaunchDescription([
-        lidar_launch,
-        laser_to_pc,
-        fusion,
-        rviz,
-    ])
-"""
+    print(f"\n{BOLD}Topics:{NC}")
+    print("  📷 Color input: /camera/color/image_raw")
+    print("  📏 Depth input: /camera/depth/image_raw")
+    print("  🌍 3D output:   /camera/depth/color/points")
 
-    temp_launch = "/tmp/show_3d_world_lidar.launch.py"
-    with open(temp_launch, 'w') as f:
-        f.write(launch_content)
+    print(f"\n{BOLD}In RViz you should see:{NC}")
+    print("  • Colored 3D point cloud of the scene")
+    print("  • Points will have RGB colors from the camera")
+    print("  • Move objects in front of camera to see them in 3D!")
 
-    return temp_launch
+    print(f"\n{YELLOW}Troubleshooting:{NC}")
+    print("  • If screen is black, wait 5-10 seconds for data")
+    print("  • Try moving objects in front of the camera")
+    print("  • Check that point cloud is enabled in RViz (left panel)")
+    print("  • Point size: 0.01m (set in RViz if too small/large)")
+
+    print(f"\n{BOLD}Debug mode enabled - watching point cloud node output...{NC}")
+    print(f"{BOLD}Press Ctrl+C to stop{NC}\n")
+
+    # Start monitoring thread
+    stop_monitoring = False
+    monitor_thread = threading.Thread(target=monitor_pointcloud_output, daemon=True)
+    monitor_thread.start()
 
 def main():
     print_header()
 
-    # Build packages if needed
-    if not build_packages():
-        print(f"\n{RED}Failed to build packages. Exiting.{NC}")
+    # Step 1: Check hardware
+    if not check_camera_hardware():
         sys.exit(1)
 
-    # Check for camera
-    has_camera = check_camera()
+    # Step 2: Check node
+    if not check_camera_node():
+        sys.exit(1)
 
-    print(f"\n{GREEN}🎨 Launching LiDAR + Camera Fusion 3D Visualization{NC}")
+    # Step 3: Check topics
+    if not check_camera_topics():
+        sys.exit(1)
 
-    # Create RViz config for fusion
-    print(f"\n{YELLOW}⚙️  Creating visualization config...{NC}")
-    rviz_config = create_rviz_config(pointcloud_topic="/colored_pointcloud", fixed_frame="camera_link")
-    print(f"{GREEN}✓ Config ready{NC}")
+    # Step 4: Check publishing (CRITICAL!)
+    if not check_camera_publishing():
+        sys.exit(1)
 
-    # Create launch file
-    print(f"\n{YELLOW}🚀 Preparing launch system...{NC}")
-    launch_file = launch_fusion_3d(rviz_config)
-    print(f"{GREEN}✓ Launch file ready: {launch_file}{NC}")
+    # Step 5: Launch point cloud generator
+    if not launch_pointcloud_node():
+        cleanup()
+        sys.exit(1)
 
-    # Show what will launch
-    print(f"\n{BLUE}═══════════════════════════════════════════════════════════════{NC}")
-    print(f"{BOLD}{GREEN}Starting 3D World Visualization - FULL SYSTEM{NC}")
-    print(f"{BLUE}═══════════════════════════════════════════════════════════════{NC}\n")
-    print("This will launch:")
-    print(f"  {GREEN}✓{NC} R2 Robot Hardware (Ackermann steering)")
-    print(f"  {GREEN}✓{NC} YDLiDAR (360° scanning)")
-    print(f"  {GREEN}✓{NC} Astra Plus Camera (RGB + Depth)")
-    print(f"  {GREEN}✓{NC} IMU + EKF Sensor Fusion")
-    print(f"  {GREEN}✓{NC} LiDAR to PointCloud converter")
-    print(f"  {GREEN}✓{NC} Camera-LiDAR Fusion (colored points)")
-    print(f"  {GREEN}✓{NC} RViz 3D viewer")
-    print(f"\n{BOLD}{YELLOW}What you'll see in RViz:{NC}")
-    print(f"  🌍 {BOLD}Colored 3D Point Cloud{NC} - LiDAR points with camera colors")
-    print(f"  📡 Red LiDAR scan - Raw 2D sensor data")
-    print(f"  📏 Grid - Reference floor\n")
+    # Step 6: Verify point cloud
+    verify_pointcloud()
 
-    print(f"{GREEN}🚀 Launching now...{NC}\n")
-    time.sleep(2)
+    # Launch RViz
+    if not launch_rviz():
+        cleanup()
+        sys.exit(1)
 
-    # Launch the system
-    os.chdir(WORKSPACE)
-    cmd = f"source /opt/ros/humble/setup.bash && source /home/jetson/yahboomcar_ros2_ws/software/library_ws/install/setup.bash && source install/setup.bash && export ROS_DOMAIN_ID=28 && ros2 launch {launch_file}"
+    # Print success
+    print_success()
 
+    # Wait for processes and show periodic status
     try:
-        subprocess.run(cmd, shell=True, executable='/bin/bash', check=True)
-    except KeyboardInterrupt:
-        print(f"\n{YELLOW}Shutting down...{NC}")
-        sys.exit(0)
-    except subprocess.CalledProcessError as e:
-        print(f"\n{RED}✗ Launch failed: {e}{NC}")
-        print(f"{RED}  Please check the output above for errors from ROS2 nodes.{NC}")
-        sys.exit(1)
+        status_counter = 0
+        while True:
+            # Check if processes are still running
+            if pointcloud_process.poll() is not None:
+                print(f"\n{RED}✗ Point cloud node died!{NC}")
+                # Show any final output
+                if pointcloud_process.stdout:
+                    output = pointcloud_process.stdout.read()
+                    if output:
+                        print(f"{RED}Final output:{NC}")
+                        print(output)
+                break
+            if rviz_process.poll() is not None:
+                print(f"\n{YELLOW}RViz closed{NC}")
+                break
 
+            # Show periodic status every 10 seconds
+            status_counter += 1
+            if status_counter >= 10:
+                status_counter = 0
+                print(f"\n{BLUE}═══ Status Update ═══{NC}")
+
+                # Check point cloud publishing rate
+                try:
+                    result = run_ros_cmd("timeout 3 ros2 topic hz /camera/depth/color/points 2>&1 | head -3", timeout_sec=5)
+                    if result and result.stdout:
+                        for line in result.stdout.split('\n'):
+                            if 'average rate' in line.lower() or 'min' in line.lower():
+                                print(f"{BLUE}  Point cloud rate: {line.strip()}{NC}")
+                except:
+                    pass
+
+                # Check number of subscribers
+                try:
+                    result = run_ros_cmd("timeout 2 ros2 topic info /camera/depth/color/points 2>/dev/null", timeout_sec=4)
+                    if result and result.stdout:
+                        for line in result.stdout.split('\n'):
+                            if 'Subscription count' in line:
+                                print(f"{BLUE}  {line.strip()}{NC}")
+                except:
+                    pass
+
+            time.sleep(1)
+    except KeyboardInterrupt:
+        pass
+
+    cleanup()
 
 if __name__ == '__main__':
     main()
