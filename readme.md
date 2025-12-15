@@ -1,11 +1,3 @@
-source /opt/ros/humble/setup.bash
-source /home/jetson/yahboomcar_ros2_ws/yahboomcar_ws/install/setup.bash
-python3 /home/jetson/yahboomcar_ros2_ws/yahboomcar_ws/scripts/show_3d_world.py
-
-
-
-source /opt/ros/humble/setup.bash
-source /home/jetson/yahboomcar_ros2_ws/yahboomcar_ws/install/setup.bash
 ros2 topic list
 
 
@@ -41,4 +33,19 @@ systemctl --user status astra_cam
 
   This will show you 307,200 dense 3D colored points (640x480 resolution) - a REAL 3D world! Place objects 0.5-3 meters in front of the camera to see them in full 3D.
 
+
+
+
+  killall -9 rtabmap rviz2 rgbd_odometry 2>/dev/null
+  sleep 2
+
+  ros2 launch show_slam.py
+
+
+
+  source /opt/ros/humble/setup.bash
+  source /home/jetson/yahboomcar_ros2_ws/yahboomcar_ws/install/setup.bash
+
+
+  ros2 launch /home/jetson/yahboomcar_ros2_ws/yahboomcar_ws/scripts/show_slam.py
 

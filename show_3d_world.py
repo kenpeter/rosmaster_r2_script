@@ -27,6 +27,7 @@ WORKSPACE = Path("/home/jetson/yahboomcar_ros2_ws/yahboomcar_ws")
 # Global process handles
 pointcloud_process = None
 rviz_process = None
+robot_process = None
 monitor_thread = None
 stop_monitoring = False
 
@@ -50,7 +51,7 @@ def monitor_pointcloud_output():
 
 def cleanup(signum=None, frame=None):
     """Clean up processes on exit"""
-    global pointcloud_process, rviz_process, stop_monitoring, monitor_thread
+    global pointcloud_process, rviz_process, robot_process, stop_monitoring, monitor_thread
     print(f"\n{YELLOW}Shutting down...{NC}")
 
     stop_monitoring = True
@@ -63,6 +64,10 @@ def cleanup(signum=None, frame=None):
     if rviz_process:
         rviz_process.terminate()
         rviz_process.wait(timeout=2)
+    if robot_process:
+        print(f"{YELLOW}Stopping robot...{NC}")
+        robot_process.terminate()
+        robot_process.wait(timeout=3)
 
     sys.exit(0)
 
@@ -125,27 +130,98 @@ def check_camera_hardware():
         print(f"{YELLOW}  Please check USB connection{NC}")
         return False
 
+def start_robot():
+    """Start the robot (camera node)"""
+    global robot_process
+
+    print(f"{YELLOW}  Starting robot...{NC}")
+
+    # Kill any existing robot processes
+    subprocess.run("pkill -f 'start_robot.sh' 2>/dev/null", shell=True)
+    subprocess.run("pkill -f 'astra_camera_node' 2>/dev/null", shell=True)
+    time.sleep(2)
+
+    # Start the robot
+    start_script = WORKSPACE / "scripts/start_robot.sh"
+    if not start_script.exists():
+        print(f"{RED}✗ start_robot.sh not found at {start_script}{NC}")
+        return False
+
+    robot_process = subprocess.Popen(
+        str(start_script),
+        shell=True,
+        executable='/bin/bash',
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        cwd=str(WORKSPACE / "scripts")
+    )
+
+    print(f"{GREEN}✓ Robot started (PID: {robot_process.pid}){NC}")
+    print(f"{YELLOW}  Waiting for camera to initialize...{NC}")
+
+    # Wait for camera node to appear
+    for i in range(30):  # Wait up to 30 seconds
+        time.sleep(1)
+        try:
+            result = run_ros_cmd("timeout 2 ros2 node list 2>/dev/null", timeout_sec=4)
+            if result and "/camera/camera" in result.stdout:
+                print(f"{GREEN}✓ Camera node is now running!{NC}")
+                return True
+        except:
+            pass
+
+        # Check if robot process died
+        if robot_process.poll() is not None:
+            print(f"{RED}✗ Robot process died during startup!{NC}")
+            # Show error output
+            if robot_process.stderr:
+                error = robot_process.stderr.read()
+                if error:
+                    print(f"{RED}Error: {error}{NC}")
+            return False
+
+        if i % 5 == 0 and i > 0:
+            print(f"{YELLOW}  Still waiting... ({i}s){NC}")
+
+    print(f"{RED}✗ Camera node failed to start after 30 seconds{NC}")
+    return False
+
 def check_camera_node():
-    """Check if camera node is running"""
+    """Check if camera node is running, start it if not"""
     print(f"\n{YELLOW}[2/6] Checking camera node...{NC}")
 
     try:
         result = run_ros_cmd("timeout 2 ros2 node list 2>/dev/null", timeout_sec=5)
 
         if result and "/camera/camera" in result.stdout:
-            print(f"{GREEN}✓ Camera node is running{NC}")
+            print(f"{GREEN}✓ Camera node is already running{NC}")
             return True
         else:
-            print(f"{RED}✗ Camera node NOT running!{NC}")
-            print(f"{YELLOW}  Please run: ./start_robot.sh{NC}")
-            return False
+            print(f"{YELLOW}⚠ Camera node NOT running{NC}")
+            return start_robot()
     except:
         print(f"{RED}✗ Failed to check nodes{NC}")
-        return False
+        print(f"{YELLOW}⚠ Attempting to start robot anyway...{NC}")
+        return start_robot()
 
 def check_camera_topics():
     """Check if camera topics exist"""
     print(f"\n{YELLOW}[3/6] Checking camera topics...{NC}")
+
+    # If we just started the robot, give it extra time for topics to appear
+    if robot_process and robot_process.poll() is None:
+        print(f"{YELLOW}  Waiting for camera topics to appear...{NC}")
+        for i in range(10):
+            time.sleep(1)
+            try:
+                result = run_ros_cmd("timeout 2 ros2 topic list 2>/dev/null", timeout_sec=4)
+                if result and "/camera/color/image_raw" in result.stdout:
+                    print(f"{GREEN}  Topics appeared!{NC}")
+                    break
+            except:
+                pass
+            if i % 3 == 0 and i > 0:
+                print(f"{YELLOW}  Still waiting... ({i}s){NC}")
 
     try:
         result = run_ros_cmd("timeout 2 ros2 topic list 2>/dev/null", timeout_sec=5)
@@ -444,32 +520,83 @@ rviz2 -d {rviz_config}
     print(f"{GREEN}✓ RViz started (PID: {rviz_process.pid}){NC}")
     return True
 
+def check_tf_frames():
+    """Check if TF frames are being published"""
+    print(f"\n{YELLOW}Checking TF frames...{NC}")
+
+    try:
+        result = run_ros_cmd("timeout 2 ros2 topic list 2>/dev/null | grep -E '(tf|tf_static)'", timeout_sec=4)
+        if result and result.returncode == 0:
+            print(f"{GREEN}✓ TF topics available{NC}")
+            return True
+        else:
+            print(f"{YELLOW}⚠ No TF topics found (this is OK for static camera){NC}")
+            return True
+    except:
+        print(f"{YELLOW}⚠ Could not check TF (this is OK){NC}")
+        return True
+
+def verify_final_setup():
+    """Final verification that everything is working"""
+    print(f"\n{YELLOW}═══ Final Verification ═══{NC}")
+
+    # Check point cloud is publishing
+    print(f"  Checking point cloud data flow... ", end="", flush=True)
+    try:
+        result = run_ros_cmd("timeout 3 ros2 topic hz /camera/depth/color/points 2>&1 | grep -i 'average'", timeout_sec=5)
+        if result and result.returncode == 0:
+            rate = result.stdout.strip()
+            print(f"{GREEN}✓{NC}")
+            print(f"    {rate}")
+        else:
+            print(f"{YELLOW}⚠ (still initializing){NC}")
+    except:
+        print(f"{YELLOW}⚠ (still initializing){NC}")
+
+    # Check if RViz is subscribed
+    print(f"  Checking RViz subscription... ", end="", flush=True)
+    time.sleep(2)  # Give RViz time to subscribe
+    try:
+        result = run_ros_cmd("timeout 2 ros2 topic info /camera/depth/color/points 2>/dev/null", timeout_sec=4)
+        if result and "Subscription count: 1" in result.stdout:
+            print(f"{GREEN}✓ RViz is subscribed{NC}")
+        else:
+            print(f"{YELLOW}⚠ Waiting for RViz...{NC}")
+    except:
+        print(f"{YELLOW}⚠ Waiting for RViz...{NC}")
+
 def print_success():
     """Print success message"""
     global monitor_thread, stop_monitoring
 
     print(f"\n{GREEN}{BOLD}═══════════════════════════════════════════════════════════{NC}")
-    print(f"{GREEN}{BOLD}  SUCCESS! Colored 3D point cloud is running!{NC}")
+    print(f"{GREEN}{BOLD}  ✓ SUCCESS! 3D WORLD VISUALIZATION READY!{NC}")
     print(f"{GREEN}{BOLD}═══════════════════════════════════════════════════════════{NC}")
 
-    print(f"\n{BOLD}Topics:{NC}")
-    print("  📷 Color input: /camera/color/image_raw")
-    print("  📏 Depth input: /camera/depth/image_raw")
-    print("  🌍 3D output:   /camera/depth/color/points")
+    print(f"\n{BOLD}What's Running:{NC}")
+    print(f"  📷 Camera Node:      /camera/camera")
+    print(f"  🔄 Point Cloud Gen:  PointCloudXyzrgbNode")
+    print(f"  📊 RViz:             3D visualization window")
 
-    print(f"\n{BOLD}In RViz you should see:{NC}")
-    print("  • Colored 3D point cloud of the scene")
-    print("  • Points will have RGB colors from the camera")
-    print("  • Move objects in front of camera to see them in 3D!")
+    print(f"\n{BOLD}Data Flow:{NC}")
+    print(f"  /camera/color/image_raw  →")
+    print(f"  /camera/depth/image_raw  →  Point Cloud Generator")
+    print(f"  /camera/depth/color/points  →  RViz")
 
-    print(f"\n{YELLOW}Troubleshooting:{NC}")
-    print("  • If screen is black, wait 5-10 seconds for data")
-    print("  • Try moving objects in front of the camera")
-    print("  • Check that point cloud is enabled in RViz (left panel)")
-    print("  • Point size: 0.01m (set in RViz if too small/large)")
+    print(f"\n{GREEN}{BOLD}🌍 Check your RViz window now!{NC}")
+    print(f"{BOLD}You should see:{NC}")
+    print(f"  ✓ Colored 3D point cloud of objects in front of camera")
+    print(f"  ✓ Real-time RGB colors from the camera")
+    print(f"  ✓ Depth information showing 3D structure")
 
-    print(f"\n{BOLD}Debug mode enabled - watching point cloud node output...{NC}")
-    print(f"{BOLD}Press Ctrl+C to stop{NC}\n")
+    print(f"\n{BOLD}Tips:{NC}")
+    print(f"  • Move your hand or objects in front of camera")
+    print(f"  • Use mouse to rotate view in RViz (click and drag)")
+    print(f"  • Zoom with scroll wheel")
+    print(f"  • If no data yet, wait 5-10 seconds")
+
+    print(f"\n{BOLD}Debug mode: Monitoring point cloud node...{NC}")
+    print(f"{BOLD}Press Ctrl+C to stop all processes{NC}\n")
 
     # Start monitoring thread
     stop_monitoring = False
@@ -503,10 +630,16 @@ def main():
     # Step 6: Verify point cloud
     verify_pointcloud()
 
+    # Check TF frames
+    check_tf_frames()
+
     # Launch RViz
     if not launch_rviz():
         cleanup()
         sys.exit(1)
+
+    # Final verification
+    verify_final_setup()
 
     # Print success
     print_success()

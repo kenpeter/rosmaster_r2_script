@@ -51,11 +51,12 @@ def generate_launch_description():
     # ========================================
     # RTAB-MAP TOPIC REMAPPINGS
     # ========================================
+    # Using IR (infrared) instead of RGB because color camera is not enabled
+    # Scan disabled for camera-only SLAM test
     rtabmap_remappings = [
-        ('rgb/image', '/camera/color/image_raw'),
-        ('rgb/camera_info', '/camera/color/camera_info'),
+        ('rgb/image', '/camera/ir/image_raw'),
+        ('rgb/camera_info', '/camera/ir/camera_info'),
         ('depth/image', '/camera/depth/image_raw'),
-        ('scan', '/scan'),
     ]
 
     # ========================================
@@ -98,30 +99,47 @@ def generate_launch_description():
         ),
 
         # ========================================
-        # HARDWARE: YDLIDAR TG30
+        # HARDWARE: YDLIDAR TG30 (DISABLED FOR CAMERA-ONLY TEST)
         # ========================================
-        LogInfo(msg="[3/7] Launching YDLidar TG30 Driver..."),
-        Node(
-            package='my_ydlidar_ros2_driver',
-            executable='my_ydlidar_ros2_driver_node',
-            name='ydlidar_driver',
-            output='screen',
-            parameters=[ydlidar_config],
-            arguments=['--ros-args', '--log-level', 'info']
-        ),
-
-        # Transform: base_link -> laser_link
-        Node(
-            package='tf2_ros',
-            executable='static_transform_publisher',
-            name='tf_base_to_laser',
-            arguments=['0.0435', '0.000053', '0.11', '3.14', '0', '0', 'base_link', 'laser_link']
-        ),
+        # LogInfo(msg="[3/7] Launching YDLidar TG30 Driver..."),
+        # Node(
+        #     package='my_ydlidar_ros2_driver',
+        #     executable='my_ydlidar_ros2_driver_node',
+        #     name='ydlidar_driver',
+        #     output='screen',
+        #     parameters=[ydlidar_config],
+        #     arguments=['--ros-args', '--log-level', 'info']
+        # ),
+        #
+        # # Transform: base_link -> laser_link
+        # Node(
+        #     package='tf2_ros',
+        #     executable='static_transform_publisher',
+        #     name='tf_base_to_laser',
+        #     arguments=['0.0435', '0.000053', '0.11', '3.14', '0', '0', 'base_link', 'laser_link']
+        # ),
 
         # ========================================
         # HARDWARE: ASTRA CAMERA
         # ========================================
-        LogInfo(msg="[4/7] Launching Astra RGB-D Camera..."),
+        LogInfo(msg="[3/5] Launching Astra RGB-D Camera (Camera-Only SLAM Mode)..."),
+
+        # Transform: base_link -> camera_link (mount position on robot)
+        Node(
+            package='tf2_ros',
+            executable='static_transform_publisher',
+            name='tf_base_to_camera',
+            arguments=['0.1', '0', '0.15', '0', '0', '0', 'base_link', 'camera_link']
+        ),
+
+        # Transform: camera_link -> camera_ir_optical_frame (optical frame convention)
+        Node(
+            package='tf2_ros',
+            executable='static_transform_publisher',
+            name='tf_camera_to_ir_optical',
+            arguments=['0', '0', '0', '-1.5708', '0', '-1.5708', 'camera_link', 'camera_ir_optical_frame']
+        ),
+
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
                 os.path.join(astra_camera_dir, 'launch', 'astra.launch.py')
@@ -132,16 +150,16 @@ def generate_launch_description():
         # ========================================
         # WAIT FOR SENSOR INITIALIZATION
         # ========================================
-        LogInfo(msg="[5/7] Waiting 5 seconds for sensors to stabilize..."),
+        LogInfo(msg="[4/5] Waiting 5 seconds for camera to stabilize..."),
         ExecuteProcess(cmd=['sleep', '5']),
 
         # ========================================
         # SLAM: RTAB-MAP VISUAL ODOMETRY
         # ========================================
-        LogInfo(msg="[6/7] Launching RTAB-Map Visual Odometry..."),
+        LogInfo(msg="[5/5] Launching RTAB-Map Visual Odometry (Camera-Only)..."),
         Node(
             package='rtabmap_odom',
-            executable='/opt/ros/humble/lib/rtabmap_odom/rgbd_odometry',
+            executable='rgbd_odometry',
             name='rgbd_odometry',
             output='screen',
             parameters=[rtabmap_params],
@@ -152,10 +170,10 @@ def generate_launch_description():
         # ========================================
         # SLAM: RTAB-MAP MAIN SLAM NODE
         # ========================================
-        LogInfo(msg="[6/7] Launching RTAB-Map SLAM System..."),
+        LogInfo(msg="[5/5] Launching RTAB-Map SLAM System (Camera-Only)..."),
         Node(
             package='rtabmap_slam',
-            executable='/opt/ros/humble/lib/rtabmap_slam/rtabmap',
+            executable='rtabmap',
             name='rtabmap',
             output='screen',
             parameters=[rtabmap_params],
@@ -166,7 +184,7 @@ def generate_launch_description():
         # ========================================
         # VISUALIZATION: RVIZ2
         # ========================================
-        LogInfo(msg="[7/7] Launching RViz2 Visualization..."),
+        LogInfo(msg="[5/5] Launching RViz2 Visualization..."),
         Node(
             package='rviz2',
             executable='rviz2',
@@ -176,7 +194,8 @@ def generate_launch_description():
         ),
 
         LogInfo(msg="========================================"),
-        LogInfo(msg="RTAB-Map 3D SLAM System Ready!"),
+        LogInfo(msg="RTAB-Map Camera-Only SLAM Ready!"),
+        LogInfo(msg="Using IR + Depth camera (no LiDAR)."),
         LogInfo(msg="Drive the robot to start building the map."),
         LogInfo(msg="========================================"),
     ])
