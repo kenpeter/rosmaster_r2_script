@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-YOLO11 Live Detection Viewer
-Single script that runs YOLO detection and displays results
+DINOv3 Live Feature Visualization
+Single script that runs DINOv3 and displays attention maps
 """
 
 import rclpy
@@ -11,45 +11,48 @@ from cv_bridge import CvBridge
 import cv2
 import numpy as np
 import time
-from ultralytics import YOLO
 import torch
 import os
 import subprocess
-import signal
 import sys
 
-class YoloLiveNode(Node):
+class DinoLiveNode(Node):
     def __init__(self):
-        super().__init__('yolo_live_test')
+        super().__init__('dino_live_test')
 
         self.get_logger().info("=" * 70)
-        self.get_logger().info("  📹 YOLO11 Live Detection Viewer")
+        self.get_logger().info("  🦖 DINOv3 Live Feature Viewer")
         self.get_logger().info("=" * 70)
 
-        # Load YOLO model
-        model_path = os.path.expanduser("~/yahboomcar_ros2_ws/yahboomcar_ws/models/yolo11s.pt")
-        self.get_logger().info("🤖 Loading YOLO11 model...")
+        # Load DINOv3 model
+        self.get_logger().info("🤖 Loading DINOv3 model...")
 
         try:
-            self.model = YOLO(model_path)
-            self.get_logger().info("✅ YOLO11-Small loaded")
+            from transformers import AutoImageProcessor, AutoModel
 
+            model_name = 'facebook/dinov2-small'
+            self.processor = AutoImageProcessor.from_pretrained(model_name)
+            self.model = AutoModel.from_pretrained(model_name)
+
+            # Move to GPU if available
             if torch.cuda.is_available():
+                self.model = self.model.cuda()
                 self.get_logger().info(f"🚀 Using GPU: {torch.cuda.get_device_name(0)}")
             else:
                 self.get_logger().info("⚠️  Using CPU (slower)")
+
+            self.model.eval()
+            self.get_logger().info("✅ DINOv2-Small loaded")
+
         except Exception as e:
             self.get_logger().error(f"❌ Failed to load model: {e}")
             raise
 
-        # Detection parameters
-        self.conf_threshold = 0.5
-
         # CV Bridge
         self.bridge = CvBridge()
 
-        # Publisher for annotated images
-        self.image_pub = self.create_publisher(Image, '/yolo_live/detections', 10)
+        # Publisher for visualizations
+        self.image_pub = self.create_publisher(Image, '/dino_live/visualization', 10)
 
         # Try to subscribe to camera topic
         self.camera_available = False
@@ -92,7 +95,7 @@ class YoloLiveNode(Node):
 
         self.get_logger().info("")
         self.get_logger().info("=" * 70)
-        self.get_logger().info("  🎬 Live Detection Started")
+        self.get_logger().info("  🎬 DINOv3 Feature Extraction Started")
         self.get_logger().info("=" * 70)
         self.get_logger().info("")
 
@@ -106,10 +109,27 @@ class YoloLiveNode(Node):
             self.get_logger().error(f"Error processing camera frame: {e}")
 
     def process_frame(self, frame):
-        """Run YOLO detection and publish annotated frame"""
-        # Run YOLO detection
+        """Run DINOv3 feature extraction and visualize"""
         start_time = time.time()
-        results = self.model(frame, conf=self.conf_threshold, verbose=False)
+
+        # Prepare image for DINOv3
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+        # Resize to 224x224 for DINOv3
+        image_resized = cv2.resize(frame_rgb, (224, 224))
+
+        # Process with DINOv3
+        with torch.no_grad():
+            inputs = self.processor(images=image_resized, return_tensors="pt")
+
+            if torch.cuda.is_available():
+                inputs = {k: v.cuda() for k, v in inputs.items()}
+
+            outputs = self.model(**inputs)
+
+            # Get last hidden state (features)
+            features = outputs.last_hidden_state  # Shape: [1, num_patches, hidden_dim]
+
         inference_time = (time.time() - start_time) * 1000  # ms
 
         # Calculate FPS
@@ -119,65 +139,12 @@ class YoloLiveNode(Node):
             self.fps_history.pop(0)
         avg_fps = sum(self.fps_history) / len(self.fps_history)
 
-        # Draw detections
-        annotated_frame = frame.copy()
-        num_detections = 0
+        # Create visualization
+        vis_frame = self.create_visualization(frame, features, avg_fps, inference_time)
 
-        if len(results) > 0 and len(results[0].boxes) > 0:
-            num_detections = len(results[0].boxes)
-
-            for box in results[0].boxes:
-                # Get box coordinates
-                x1, y1, x2, y2 = map(int, box.xyxy[0])
-
-                # Get class and confidence
-                cls = int(box.cls[0])
-                conf = float(box.conf[0])
-                class_name = self.model.names[cls]
-
-                # Draw bounding box (thick green)
-                cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 3)
-
-                # Draw label with background
-                label = f"{class_name} {conf:.2f}"
-                label_size, _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2)
-
-                # Draw label background (green)
-                cv2.rectangle(annotated_frame,
-                            (x1, y1 - label_size[1] - 15),
-                            (x1 + label_size[0] + 10, y1),
-                            (0, 255, 0), -1)
-
-                # Draw label text (black)
-                cv2.putText(annotated_frame, label, (x1 + 5, y1 - 8),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 2)
-
-        # Draw info overlay (top-left corner)
-        overlay_y = 35
-        line_height = 35
-
-        # Background for text (black rectangle)
-        cv2.rectangle(annotated_frame, (10, 10), (400, 180), (0, 0, 0), -1)
-
-        # Draw stats
-        cv2.putText(annotated_frame, f"FPS: {avg_fps:.1f}", (20, overlay_y),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-        overlay_y += line_height
-
-        cv2.putText(annotated_frame, f"Inference: {inference_time:.1f} ms", (20, overlay_y),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-        overlay_y += line_height
-
-        cv2.putText(annotated_frame, f"Detections: {num_detections}", (20, overlay_y),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
-        overlay_y += line_height
-
-        cv2.putText(annotated_frame, f"Confidence: {self.conf_threshold:.1f}", (20, overlay_y),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2)
-
-        # Publish annotated frame
+        # Publish visualization
         try:
-            msg = self.bridge.cv2_to_imgmsg(annotated_frame, encoding='bgr8')
+            msg = self.bridge.cv2_to_imgmsg(vis_frame, encoding='bgr8')
             self.image_pub.publish(msg)
         except Exception as e:
             self.get_logger().error(f"Failed to publish image: {e}")
@@ -186,14 +153,79 @@ class YoloLiveNode(Node):
         current_time = time.time()
         if current_time - self.last_log_time > 2.0:
             self.get_logger().info(
-                f"📊 {avg_fps:.1f} FPS | {inference_time:.1f}ms | {num_detections} objects"
+                f"📊 {avg_fps:.1f} FPS | {inference_time:.1f}ms | Feature dim: {features.shape[-1]}"
             )
             self.last_log_time = current_time
+
+    def create_visualization(self, frame, features, fps, inference_time):
+        """Create visualization of DINOv3 features"""
+        # Get feature statistics
+        feature_mean = features.mean().item()
+        feature_std = features.std().item()
+        feature_max = features.max().item()
+        feature_min = features.min().item()
+
+        # Create attention map visualization
+        # Average across feature dimension to get spatial attention
+        attention = features[0, 1:, :].mean(dim=-1)  # Skip CLS token
+        num_patches = int(np.sqrt(attention.shape[0]))
+
+        # Reshape to 2D grid
+        attention_map = attention.reshape(num_patches, num_patches)
+        attention_map = attention_map.cpu().numpy()
+
+        # Normalize to 0-255
+        attention_map = (attention_map - attention_map.min()) / (attention_map.max() - attention_map.min() + 1e-8)
+        attention_map = (attention_map * 255).astype(np.uint8)
+
+        # Resize to match original frame
+        h, w = frame.shape[:2]
+        attention_resized = cv2.resize(attention_map, (w, h), interpolation=cv2.INTER_CUBIC)
+
+        # Apply colormap
+        attention_colored = cv2.applyColorMap(attention_resized, cv2.COLORMAP_JET)
+
+        # Blend with original frame
+        alpha = 0.4
+        blended = cv2.addWeighted(frame, 1 - alpha, attention_colored, alpha, 0)
+
+        # Draw info overlay (top-left)
+        overlay_y = 35
+        line_height = 35
+
+        # Background for text
+        cv2.rectangle(blended, (10, 10), (450, 250), (0, 0, 0), -1)
+
+        # Draw stats
+        cv2.putText(blended, f"FPS: {fps:.1f}", (20, overlay_y),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+        overlay_y += line_height
+
+        cv2.putText(blended, f"Inference: {inference_time:.1f} ms", (20, overlay_y),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+        overlay_y += line_height
+
+        cv2.putText(blended, f"Feature Mean: {feature_mean:.3f}", (20, overlay_y),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+        overlay_y += line_height
+
+        cv2.putText(blended, f"Feature Std: {feature_std:.3f}", (20, overlay_y),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+        overlay_y += line_height
+
+        cv2.putText(blended, f"Range: [{feature_min:.2f}, {feature_max:.2f}]", (20, overlay_y),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+
+        # Add title
+        cv2.putText(blended, "DINOv3 Attention Map", (20, h - 20),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2)
+
+        return blended
 
 
 def main(args=None):
     print("=" * 70)
-    print("  🚀 YOLO11 Live Detection - Real Camera Test")
+    print("  🚀 DINOv3 Live Feature Visualization")
     print("=" * 70)
     print("")
 
@@ -219,29 +251,29 @@ def main(args=None):
 
     # Create node
     try:
-        node = YoloLiveNode()
+        node = DinoLiveNode()
     except Exception as e:
         print(f"❌ Failed to create node: {e}")
         rclpy.shutdown()
         sys.exit(1)
 
     # Launch image viewer in a separate process
-    print("🖼️  Launching image viewer...")
+    print("🖼️  Launching visualization viewer...")
     print("")
     print("=" * 70)
-    print("  📹 Live Camera View with YOLO11 Detection")
+    print("  🦖 DINOv3 Feature Visualization")
     print("=" * 70)
     print("")
     print("  You'll see:")
-    print("    • Real-time camera feed from robot")
-    print("    • Green boxes around detected objects")
-    print("    • Object labels (person, car, cup, etc.)")
-    print("    • FPS and inference time")
+    print("    • Real-time camera feed")
+    print("    • Attention heatmap overlay (colored)")
+    print("    • Red/yellow = high attention areas")
+    print("    • Blue = low attention areas")
+    print("    • FPS and feature statistics")
     print("")
-    print("  Try pointing camera at:")
-    print("    • People, pets, cars")
-    print("    • Common objects (cup, bottle, phone)")
-    print("    • Furniture, plants, appliances")
+    print("  DINOv3 shows what the AI 'pays attention to'")
+    print("  in the scene - useful for understanding")
+    print("  visual perception!")
     print("")
     print("  Press Ctrl+C to stop")
     print("=" * 70)
@@ -251,7 +283,7 @@ def main(args=None):
     try:
         # Start rqt_image_view
         viewer_process = subprocess.Popen(
-            ['ros2', 'run', 'rqt_image_view', 'rqt_image_view', '/yolo_live/detections'],
+            ['ros2', 'run', 'rqt_image_view', 'rqt_image_view', '/dino_live/visualization'],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL
         )
@@ -287,7 +319,7 @@ def main(args=None):
 
         print("")
         print("=" * 70)
-        print("  ✅ YOLO Live Detection Stopped")
+        print("  ✅ DINOv3 Visualization Stopped")
         print("=" * 70)
         print("")
 
