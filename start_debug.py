@@ -155,9 +155,11 @@ def run_terminal(title, command, geometry=None):
     subprocess.Popen(full_cmd, shell=True)
 
 def cleanup_processes():
+    """Kill any existing autonomous and robot processes"""
     print("\n🧹 Cleaning up existing processes...")
     subprocess.run("pkill -f 'ros2 run autonomous_driving'", shell=True)
     subprocess.run("pkill -f 'ros2 launch autonomous_driving'", shell=True)
+    subprocess.run("pkill -f 'ros2 launch yahboomcar_bringup'", shell=True)
     time.sleep(2)
 
 def main():
@@ -174,21 +176,17 @@ def main():
     try:
         # 0. Launch Robot Hardware (Base, Lidar, Camera)
         print("🤖 Launching Robot Hardware (Base, Lidar, Camera)...")
-        hardware_cmd = f"{SETUP_CMD} && ros2 launch yahboomcar_bringup yahboomcar_bringup_R2_full_launch.py"
+        hardware_cmd = f"{SETUP_CMD} && source ~/yahboomcar_ros2_ws/software/library_ws/install/setup.bash && export ROS_DOMAIN_ID=28 && ros2 launch yahboomcar_bringup yahboomcar_bringup_R2_full_launch.py"
         # We run this in a separate terminal so user can see hardware status/errors
         run_terminal("Robot Hardware", hardware_cmd, geometry="100x20")
         time.sleep(10) # Wait for hardware to initialize
 
         # 1. Launch autonomous driving nodes
         print("📡 Launching autonomous driving nodes...")
-        launch_cmd = f"{SETUP_CMD} && ros2 launch autonomous_driving autonomous_driving_launch.py enable_autonomous:=true"
+        launch_cmd = f"{SETUP_CMD} && export ROS_DOMAIN_ID=28 && ros2 launch autonomous_driving autonomous_driving_launch.py enable_autonomous:=true"
         main_launch = subprocess.Popen(launch_cmd, shell=True, executable="/bin/bash")
-        
-        # 2. Relay vel_raw -> cmd_vel (Fix for wheel movement)
-        print("🔗 Establishing control relay (/vel_raw -> /cmd_vel)...")
-        relay_cmd = f"{SETUP_CMD} && ros2 run topic_tools relay /vel_raw /cmd_vel"
-        subprocess.Popen(relay_cmd, shell=True, executable="/bin/bash")
-        time.sleep(2)
+        processes.append(main_launch)
+        time.sleep(5)
 
         # 3. Launch Visualizations
         run_terminal("YOLO Detections", "sleep 3 && ros2 run rqt_image_view rqt_image_view /autonomous/debug_image")

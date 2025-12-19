@@ -28,25 +28,30 @@ def run_terminal(title, command, geometry=None):
     subprocess.Popen(full_cmd, shell=True)
 
 def cleanup_processes():
-    """Kill any existing autonomous processes"""
+    """Kill any existing autonomous and robot processes"""
     print("\n🧹 Cleaning up existing processes...")
     subprocess.run("pkill -f 'ros2 run autonomous_driving'", shell=True)
     subprocess.run("pkill -f 'ros2 launch autonomous_driving'", shell=True)
+    subprocess.run("pkill -f 'ros2 launch yahboomcar_bringup'", shell=True)
     time.sleep(2)
 
 def main():
     print("="*71)
-    print("  🚀 Starting Autonomous Driving System with Visualization (Python)")
+    print("  🚀 Starting Complete Autonomous System (Python)")
     print("="*71)
     print("")
-    print("  Windows that will open:")
+    print("  This will start:")
+    print("    🤖 Robot Hardware (motors, camera, LiDAR, IMU)")
+    print("    🧠 Autonomous Driving (YOLO11, DINOv3, TinyLLM)")
+    print("")
+    print("  Visualization windows:")
     print("    1. Main Control Terminal (this window)")
-    print("    2. YOLO Detections (camera view with bounding boxes)")
+    print("    2. YOLO11 Detections (camera view with bounding boxes)")
     print("    3. DINOv3 Features (attention visualization)")
     print("    4. TinyLLM Reasoning (decision text)")
-    print("    5. 3D SLAM World (Foxglove/RViz)")
+    print("    5. 3D SLAM World (RViz)")
     print("")
-    print("  To stop everything: Press Ctrl+C or use ./stop_autonomous.sh")
+    print("  To stop everything: Press Ctrl+C")
     print("="*71)
     print("")
 
@@ -60,11 +65,17 @@ def main():
     processes = []
 
     try:
-        # 1. Launch autonomous driving nodes
+        # 1. Launch robot hardware first (motors, camera, LiDAR, IMU)
+        print("🤖 Launching robot hardware (motors, camera, LiDAR, IMU)...")
+        robot_cmd = f"{SETUP_CMD} && source ~/yahboomcar_ros2_ws/software/library_ws/install/setup.bash && export ROS_DOMAIN_ID=28 && ros2 launch yahboomcar_bringup yahboomcar_bringup_R2_full_launch.py"
+        robot_launch = subprocess.Popen(robot_cmd, shell=True, executable="/bin/bash")
+        processes.append(robot_launch)
+        print("   Waiting for robot hardware to initialize...")
+        time.sleep(8)
+
+        # 2. Launch autonomous driving nodes
         print("📡 Launching autonomous driving nodes...")
-        # We run this in the background using Popen, but kept in this process group
-        # Note: We use the same bash wrapping to ensure environment is set
-        launch_cmd = f"{SETUP_CMD} && ros2 launch autonomous_driving autonomous_driving_launch.py enable_autonomous:=true"
+        launch_cmd = f"{SETUP_CMD} && export ROS_DOMAIN_ID=28 && ros2 launch autonomous_driving autonomous_driving_launch.py enable_autonomous:=true"
         main_launch = subprocess.Popen(launch_cmd, shell=True, executable="/bin/bash")
         processes.append(main_launch)
         time.sleep(5)
@@ -160,10 +171,11 @@ def main():
     except KeyboardInterrupt:
         print("\n🛑 Stop signal received. Shutting down...")
     finally:
-        # Kill the main launch process if it's still running
-        if 'main_launch' in locals() and main_launch.poll() is None:
-            main_launch.terminate()
-        
+        # Kill all launch processes if they're still running
+        for proc in processes:
+            if proc.poll() is None:
+                proc.terminate()
+
         # Run cleanup script/commands
         cleanup_processes()
         print("✅ System stopped.")
