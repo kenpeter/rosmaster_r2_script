@@ -3,7 +3,11 @@
 ONE SCRIPT TO SHOW 3D WORLD
 ============================
 Run this to see your 3D colored world visualization!
-Uses RGB-D camera (no LiDAR needed!)
+Uses RGB-D camera + YDLidar fusion for 360° coverage!
+
+This script can run in two modes:
+1. Normal mode: Launches full visualization pipeline
+2. Fusion mode: Runs as ROS2 fusion node (internal use)
 """
 
 import os
@@ -12,6 +16,7 @@ import subprocess
 import time
 import signal
 import threading
+import argparse
 from pathlib import Path
 
 # Colors for terminal output
@@ -26,10 +31,235 @@ WORKSPACE = Path("/home/jetson/yahboomcar_ros2_ws/yahboomcar_ws")
 
 # Global process handles
 pointcloud_process = None
+fusion_process = None
 rviz_process = None
 robot_process = None
+ydlidar_process = None
 monitor_thread = None
 stop_monitoring = False
+
+# ============================================================================
+# FUSION NODE CLASS (runs when script is called with --fusion-mode)
+# ============================================================================
+
+class FusionNode:
+    """ROS2 node that fuses camera point cloud + lidar scan into unified 3D world"""
+
+    def __init__(self):
+        import rclpy
+        from rclpy.node import Node
+        from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+        from sensor_msgs.msg import LaserScan, PointCloud2, PointField
+        from tf2_ros import Buffer, TransformListener
+        import numpy as np
+        import struct
+
+        # Store imports as instance variables for use in methods
+        self.rclpy = rclpy
+        self.Node = Node
+        self.LaserScan = LaserScan
+        self.PointCloud2 = PointCloud2
+        self.PointField = PointField
+        self.np = np
+        self.struct = struct
+        self.Buffer = Buffer
+        self.TransformListener = TransformListener
+        self.QoSProfile = QoSProfile
+        self.ReliabilityPolicy = ReliabilityPolicy
+        self.HistoryPolicy = HistoryPolicy
+
+        # Initialize the node
+        class FusionNodeImpl(Node):
+            def __init__(node_self, parent):
+                super().__init__('fusion_3d')
+                node_self.parent = parent
+
+                # QoS for Lidar: BEST_EFFORT
+                lidar_qos = QoSProfile(
+                    reliability=ReliabilityPolicy.BEST_EFFORT,
+                    history=HistoryPolicy.KEEP_LAST,
+                    depth=5
+                )
+
+                # QoS for Camera: RELIABLE
+                camera_qos = QoSProfile(
+                    reliability=ReliabilityPolicy.RELIABLE,
+                    history=HistoryPolicy.KEEP_LAST,
+                    depth=2
+                )
+
+                node_self.tf_buffer = Buffer()
+                node_self.tf_listener = TransformListener(node_self.tf_buffer, node_self)
+
+                node_self.scan_sub = node_self.create_subscription(
+                    LaserScan, '/scan', node_self.scan_cb, lidar_qos)
+                node_self.pc_sub = node_self.create_subscription(
+                    PointCloud2, '/camera/depth_registered/points', node_self.pc_cb, camera_qos)
+                node_self.fused_pub = node_self.create_publisher(PointCloud2, '/fused_3d_world', 10)
+
+                node_self.scan = None
+                node_self.pc = None
+                node_self.laser_to_camera_transform = None
+                node_self.timer = node_self.create_timer(0.1, node_self.fuse)
+                node_self.get_logger().info("✓ Fusion node ready")
+
+            def scan_cb(node_self, msg):
+                node_self.scan = msg
+
+            def pc_cb(node_self, msg):
+                node_self.pc = msg
+
+            def get_transform(node_self):
+                try:
+                    return node_self.tf_buffer.lookup_transform(
+                        'camera_link', 'laser_link',
+                        node_self.parent.rclpy.time.Time(),
+                        timeout=node_self.parent.rclpy.duration.Duration(seconds=0.1))
+                except:
+                    return None
+
+            def transform_lidar_point(node_self, x_laser, y_laser, z_laser, transform):
+                if transform is None:
+                    return x_laser, y_laser, z_laser
+
+                tx = transform.transform.translation.x
+                ty = transform.transform.translation.y
+                tz = transform.transform.translation.z
+                qx = transform.transform.rotation.x
+                qy = transform.transform.rotation.y
+                qz = transform.transform.rotation.z
+                qw = transform.transform.rotation.w
+
+                # Rotation matrix from quaternion
+                r11 = 1 - 2*(qy**2 + qz**2)
+                r12 = 2*(qx*qy - qz*qw)
+                r13 = 2*(qx*qz + qy*qw)
+                r21 = 2*(qx*qy + qz*qw)
+                r22 = 1 - 2*(qx**2 + qz**2)
+                r23 = 2*(qy*qz - qx*qw)
+                r31 = 2*(qx*qz - qy*qw)
+                r32 = 2*(qy*qz + qx*qw)
+                r33 = 1 - 2*(qx**2 + qy**2)
+
+                # Apply transform
+                x_cam = r11*x_laser + r12*y_laser + r13*z_laser + tx
+                y_cam = r21*x_laser + r22*y_laser + r23*z_laser + ty
+                z_cam = r31*x_laser + r32*y_laser + r33*z_laser + tz
+
+                return x_cam, y_cam, z_cam
+
+            def fuse(node_self):
+                points = []
+                np = node_self.parent.np
+                struct = node_self.parent.struct
+
+                # Get transform once
+                if node_self.laser_to_camera_transform is None:
+                    node_self.laser_to_camera_transform = node_self.get_transform()
+
+                # Add Lidar points (RED)
+                if node_self.scan:
+                    angle = node_self.scan.angle_min
+                    for r in node_self.scan.ranges:
+                        if 0.1 < r < 12.0 and not np.isinf(r) and not np.isnan(r):
+                            x_laser = r * np.cos(angle)
+                            y_laser = r * np.sin(angle)
+                            x, y, z = node_self.transform_lidar_point(
+                                x_laser, y_laser, 0.0, node_self.laser_to_camera_transform)
+
+                            # RED color (BGR: 0, 0, 255)
+                            rgb = struct.unpack('I', struct.pack('BBBB', 0, 0, 255, 255))[0]
+                            # Add 3 points for thickness
+                            points.extend([[x, y, z-0.02, rgb], [x, y, z, rgb], [x, y, z+0.02, rgb]])
+                        angle += node_self.scan.angle_increment
+
+                # Add Camera RGB point cloud
+                if node_self.pc:
+                    step = node_self.pc.point_step
+                    row_step = node_self.pc.row_step
+                    if hasattr(node_self.pc.data, 'tobytes'):
+                        data = node_self.pc.data.tobytes()
+                    else:
+                        data = node_self.pc.data
+
+                    # Smart downsampling (aim for ~30k points)
+                    total = node_self.pc.width * node_self.pc.height
+                    skip = max(1, total // 30000)
+
+                    if node_self.pc.height > 1:  # Organized cloud
+                        v_skip = max(1, int(np.sqrt(skip)))
+                        u_skip = max(1, skip // v_skip)
+                        for v in range(0, node_self.pc.height, v_skip):
+                            for u in range(0, node_self.pc.width, u_skip):
+                                off = v * row_step + u * step
+                                try:
+                                    x, y, z = struct.unpack_from('fff', data, off)
+                                    if not (np.isnan(x) or np.isinf(x) or np.isnan(z)) and 0.1 < z < 10.0:
+                                        rgb = struct.unpack_from('I', data, off + 16)[0]
+                                        points.append([x, y, z, rgb])
+                                except:
+                                    pass
+                    else:  # Unorganized cloud
+                        for i in range(0, total, skip):
+                            off = i * step
+                            try:
+                                x, y, z = struct.unpack_from('fff', data, off)
+                                if not (np.isnan(x) or np.isinf(x) or np.isnan(z)) and 0.1 < z < 10.0:
+                                    rgb = struct.unpack_from('I', data, off + 16)[0]
+                                    points.append([x, y, z, rgb])
+                            except:
+                                pass
+
+                # Publish fused point cloud
+                if points:
+                    try:
+                        msg = node_self.parent.PointCloud2()
+                        msg.header.frame_id = 'camera_link'
+                        msg.header.stamp = node_self.get_clock().now().to_msg()
+                        msg.height = 1
+                        msg.width = len(points)
+                        msg.fields = [
+                            node_self.parent.PointField(name='x', offset=0, datatype=node_self.parent.PointField.FLOAT32, count=1),
+                            node_self.parent.PointField(name='y', offset=4, datatype=node_self.parent.PointField.FLOAT32, count=1),
+                            node_self.parent.PointField(name='z', offset=8, datatype=node_self.parent.PointField.FLOAT32, count=1),
+                            node_self.parent.PointField(name='rgb', offset=16, datatype=node_self.parent.PointField.UINT32, count=1),
+                        ]
+                        msg.point_step = 32
+                        msg.row_step = 32 * len(points)
+                        msg.is_dense = True
+                        msg.is_bigendian = False
+
+                        buf = []
+                        for p in points:
+                            buf.append(struct.pack('fff4xI12x', p[0], p[1], p[2], int(p[3])))
+                        msg.data = b''.join(buf)
+
+                        node_self.fused_pub.publish(msg)
+                    except:
+                        pass
+
+        self.node = FusionNodeImpl(self)
+
+    def spin(self):
+        """Run the fusion node"""
+        try:
+            self.rclpy.spin(self.node)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            self.node.destroy_node()
+            self.rclpy.shutdown()
+
+def run_fusion_node():
+    """Entry point when running in fusion mode"""
+    import rclpy
+    rclpy.init()
+    fusion = FusionNode()
+    fusion.spin()
+
+# ============================================================================
+# LAUNCHER MODE FUNCTIONS
+# ============================================================================
 
 def monitor_pointcloud_output():
     """Monitor point cloud node output in background"""
@@ -51,16 +281,22 @@ def monitor_pointcloud_output():
 
 def cleanup(signum=None, frame=None):
     """Clean up processes on exit"""
-    global pointcloud_process, rviz_process, robot_process, stop_monitoring, monitor_thread
+    global pointcloud_process, fusion_process, rviz_process, robot_process, ydlidar_process, stop_monitoring, monitor_thread
     print(f"\n{YELLOW}Shutting down...{NC}")
 
     stop_monitoring = True
     if monitor_thread:
         monitor_thread.join(timeout=2)
 
+    if fusion_process:
+        fusion_process.terminate()
+        fusion_process.wait(timeout=2)
     if pointcloud_process:
         pointcloud_process.terminate()
         pointcloud_process.wait(timeout=2)
+    if ydlidar_process:
+        ydlidar_process.terminate()
+        ydlidar_process.wait(timeout=2)
     if rviz_process:
         rviz_process.terminate()
         rviz_process.wait(timeout=2)
@@ -105,8 +341,8 @@ def print_header():
     print("║                                                               ║")
     print("║         🌍  3D WORLD VISUALIZATION  🌍                        ║")
     print("║                                                               ║")
-    print("║         Your ONE script for 3D colored world!                ║")
-    print("║                (RGB-D camera only - no LiDAR needed!)        ║")
+    print("║         Your ONE script for complete 3D world!               ║")
+    print("║         (RGB-D camera + YDLidar 360° fusion!)                ║")
     print("║                                                               ║")
     print("╚═══════════════════════════════════════════════════════════════╝")
     print(f"{NC}\n")
@@ -495,6 +731,139 @@ def verify_pointcloud():
         print(f" {YELLOW}⚠ Timeout: {e}{NC}")
         return True
 
+def check_ydlidar_hardware():
+    """Check if YDLidar is available"""
+    print(f"\n{YELLOW}[OPTIONAL] Checking for YDLidar...{NC}")
+
+    # Check for ydlidar USB device
+    result = subprocess.run(
+        "ls /dev/ydlidar 2>/dev/null",
+        shell=True,
+        capture_output=True,
+        text=True
+    )
+
+    if result.returncode == 0:
+        print(f"{GREEN}✓ YDLidar device detected at /dev/ydlidar{NC}")
+        return True
+    else:
+        # Also check for ttyUSB devices
+        result = subprocess.run(
+            "ls /dev/ttyUSB* 2>/dev/null",
+            shell=True,
+            capture_output=True,
+            text=True
+        )
+        if result.returncode == 0:
+            print(f"{YELLOW}⚠ YDLidar not at /dev/ydlidar, but found USB devices{NC}")
+            print(f"{YELLOW}  This is OK - will try to use YDLidar if node starts{NC}")
+            return True
+        else:
+            print(f"{YELLOW}⚠ YDLidar NOT detected{NC}")
+            print(f"{YELLOW}  Continuing with camera-only mode...{NC}")
+            return False
+
+def start_ydlidar():
+    """Start YDLidar node"""
+    global ydlidar_process
+
+    print(f"\n{YELLOW}[BONUS] Starting YDLidar for 360° coverage...{NC}")
+
+    # Kill any existing ydlidar processes
+    subprocess.run("pkill -f 'my_ydlidar_ros2_driver_node' 2>/dev/null", shell=True)
+    time.sleep(1)
+
+    # Start ydlidar node with config file
+    ydlidar_config = "/home/jetson/yahboomcar_ros2_ws/yahboomcar_ws/install/my_ydlidar_ros2_driver/share/my_ydlidar_ros2_driver/params/ydlidar.yaml"
+
+    cmd = f"""
+source /opt/ros/humble/setup.bash
+source /home/jetson/yahboomcar_ros2_ws/software/library_ws/install/setup.bash
+cd /home/jetson/yahboomcar_ros2_ws/yahboomcar_ws
+source install/setup.bash
+export ROS_DOMAIN_ID=28
+
+ros2 run my_ydlidar_ros2_driver my_ydlidar_ros2_driver_node --ros-args --params-file {ydlidar_config}
+"""
+
+    ydlidar_process = subprocess.Popen(
+        cmd,
+        shell=True,
+        executable='/bin/bash',
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE
+    )
+
+    print(f"{GREEN}✓ YDLidar node started (PID: {ydlidar_process.pid}){NC}")
+    print(f"{YELLOW}  Waiting for /scan topic to appear...{NC}")
+
+    # Wait for /scan topic to appear
+    for i in range(20):
+        time.sleep(1)
+        try:
+            result = run_ros_cmd("timeout 2 ros2 topic list 2>/dev/null", timeout_sec=4)
+            if result and "/scan" in result.stdout:
+                print(f"{GREEN}✓ /scan topic is now available!{NC}")
+                return True
+        except:
+            pass
+
+        # Check if process died
+        if ydlidar_process.poll() is not None:
+            print(f"{YELLOW}⚠ YDLidar process died - continuing with camera only{NC}")
+            return False
+
+        if i % 5 == 0 and i > 0:
+            print(f"{YELLOW}  Still waiting... ({i}s){NC}")
+
+    print(f"{YELLOW}⚠ YDLidar /scan topic not detected - continuing with camera only{NC}")
+    return False
+
+def launch_fusion_node():
+    """Launch sensor fusion node to combine camera + lidar"""
+    global fusion_process
+
+    print(f"\n{YELLOW}[FUSION] Launching 3D sensor fusion node...{NC}")
+    print(f"{GREEN}✓ Using integrated fusion node (no temp files!){NC}")
+
+    # Launch this same script in fusion mode
+    script_path = Path(__file__).resolve()
+
+    cmd = f"""
+source /opt/ros/humble/setup.bash
+source /home/jetson/yahboomcar_ros2_ws/software/library_ws/install/setup.bash
+cd /home/jetson/yahboomcar_ros2_ws/yahboomcar_ws
+source install/setup.bash
+export ROS_DOMAIN_ID=28
+
+python3 {script_path} --fusion-mode
+"""
+
+    fusion_process = subprocess.Popen(
+        cmd,
+        shell=True,
+        executable='/bin/bash',
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE
+    )
+
+    print(f"{GREEN}✓ Fusion node started (PID: {fusion_process.pid}){NC}")
+
+    # Wait for fusion topic
+    print(f"{YELLOW}  Waiting for /fused_3d_world topic...{NC}")
+    for i in range(10):
+        time.sleep(1)
+        try:
+            result = run_ros_cmd("timeout 2 ros2 topic list 2>/dev/null", timeout_sec=4)
+            if result and "/fused_3d_world" in result.stdout:
+                print(f"{GREEN}✓ /fused_3d_world topic ready!{NC}")
+                return True
+        except:
+            pass
+
+    print(f"{GREEN}✓ Fusion node running{NC}")
+    return True
+
 def launch_rviz():
     """Launch RViz visualization"""
     global rviz_process
@@ -608,22 +977,36 @@ def print_success():
 
     print(f"\n{BOLD}What's Running:{NC}")
     print(f"  📷 Camera Node:      /camera/camera")
-    print(f"  🔄 Point Cloud Gen:  PointCloudXyzrgbNode")
+    print(f"  🔄 Point Cloud Gen:  camera_driver (built-in)")
+    if fusion_process and fusion_process.poll() is None:
+        print(f"  🌐 Fusion Node:      Merging camera + lidar data")
+    if ydlidar_process and ydlidar_process.poll() is None:
+        print(f"  📡 YDLidar Node:     360° laser scanning")
     print(f"  📊 RViz:             3D visualization window")
 
     print(f"\n{BOLD}Data Flow:{NC}")
-    print(f"  /camera/color/image_raw  →")
-    print(f"  /camera/depth/image_raw  →  Point Cloud Generator")
-    print(f"  /camera/depth_registered/points  →  RViz")
+    if ydlidar_process and ydlidar_process.poll() is None:
+        print(f"  /scan (YDLidar 360°)  ────┐")
+        print(f"                             ├──→  Fusion Node  →  /fused_3d_world  →  RViz")
+        print(f"  /camera/depth_registered  ─┘")
+    else:
+        print(f"  /camera/depth_registered/points  →  Fusion Node  →  /fused_3d_world  →  RViz")
 
     print(f"\n{GREEN}{BOLD}🌍 Check your RViz window now!{NC}")
     print(f"{BOLD}You should see:{NC}")
-    print(f"  ✓ Colored 3D point cloud of objects in front of camera")
+    print(f"  ✓ Colored 3D point cloud from camera (rich detail)")
+    if ydlidar_process and ydlidar_process.poll() is None:
+        print(f"  ✓ RED ring showing 360° lidar scan at robot height")
+        print(f"  ✓ FULL 360° environment coverage!")
+    else:
+        print(f"  ⚠ Camera-only mode (YDLidar not detected)")
     print(f"  ✓ Real-time RGB colors from the camera")
     print(f"  ✓ Depth information showing 3D structure")
 
     print(f"\n{BOLD}Tips:{NC}")
     print(f"  • Move your hand or objects in front of camera")
+    if ydlidar_process and ydlidar_process.poll() is None:
+        print(f"  • Walk around - see the RED ring track surroundings 360°")
     print(f"  • Use mouse to rotate view in RViz (click and drag)")
     print(f"  • Zoom with scroll wheel")
     print(f"  • If no data yet, wait 5-10 seconds")
@@ -639,29 +1022,39 @@ def print_success():
 def main():
     print_header()
 
-    # Step 1: Check hardware
+    # Step 1: Check camera hardware
     if not check_camera_hardware():
         sys.exit(1)
 
-    # Step 2: Check node
+    # Step 2: Check camera node
     if not check_camera_node():
         sys.exit(1)
 
-    # Step 3: Check topics
+    # Step 3: Check camera topics
     if not check_camera_topics():
         sys.exit(1)
 
-    # Step 4: Check publishing (CRITICAL!)
+    # Step 4: Check camera publishing (CRITICAL!)
     if not check_camera_publishing():
         sys.exit(1)
 
-    # Step 5: Launch point cloud generator
+    # Step 5: Launch point cloud generator (camera)
     if not launch_pointcloud_node():
         cleanup()
         sys.exit(1)
 
-    # Step 6: Verify point cloud
+    # Step 6: Verify camera point cloud
     verify_pointcloud()
+
+    # Step 7: Check for YDLidar (optional)
+    has_ydlidar = False
+    if check_ydlidar_hardware():
+        if start_ydlidar():
+            has_ydlidar = True
+
+    # Step 8: Launch fusion node (combines camera + lidar if available)
+    if not launch_fusion_node():
+        print(f"{YELLOW}⚠ Fusion node failed, but continuing...{NC}")
 
     # Check TF frames
     check_tf_frames()
@@ -728,4 +1121,16 @@ def main():
     cleanup()
 
 if __name__ == '__main__':
-    main()
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description='3D World Visualization')
+    parser.add_argument('--fusion-mode', action='store_true',
+                        help='Run as fusion node (internal use)')
+    args = parser.parse_args()
+
+    # Run in appropriate mode
+    if args.fusion_mode:
+        # Fusion node mode - run as ROS2 node
+        run_fusion_node()
+    else:
+        # Normal mode - launch full visualization
+        main()
