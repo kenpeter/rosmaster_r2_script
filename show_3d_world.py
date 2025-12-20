@@ -46,14 +46,14 @@ def setup_environment():
     # Source ROS2 environment
     env = os.environ.copy()
 
-    # Build source commands
-    source_cmd = f"""
-    source /opt/ros/humble/setup.bash
-    source /home/jetson/yahboomcar_ros2_ws/software/library_ws/install/setup.bash
-    cd {workspace_root}
-    source install/setup.bash
-    export ROS_DOMAIN_ID=28
-    """
+    # Build source commands (single line for subprocess)
+    source_cmd = (
+        f"source /opt/ros/humble/setup.bash && "
+        f"source /home/jetson/yahboomcar_ros2_ws/software/library_ws/install/setup.bash && "
+        f"cd {workspace_root} && "
+        f"source install/setup.bash && "
+        f"export ROS_DOMAIN_ID=28"
+    )
 
     return env, workspace_root, script_dir, source_cmd
 
