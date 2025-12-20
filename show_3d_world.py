@@ -125,14 +125,16 @@ def launch_rtabmap(source_cmd, workspace_root):
 
 def launch_rviz(source_cmd, script_dir):
     """Launch RViz with fusion config"""
-    print(f"{Colors.GREEN}Launching RViz with 3D fusion visualization...{Colors.NC}")
+    print(f"{Colors.GREEN}Launching RViz with comprehensive 3D visualization...{Colors.NC}")
     print()
-    print(f"{Colors.YELLOW}What you'll see:{Colors.NC}")
-    print(f"  • {Colors.YELLOW}Yellow points{Colors.NC} = YDLidar TG30 scan")
-    print(f"  • {Colors.CYAN}Colored cloud{Colors.NC} = Camera RGB-D point cloud")
+    print(f"{Colors.YELLOW}RViz displays:{Colors.NC}")
+    print(f"  • {Colors.YELLOW}Yellow points{Colors.NC} = YDLidar TG30 2D scan")
+    print(f"  • {Colors.CYAN}RGB cloud{Colors.NC} = Camera depth point cloud")
+    print(f"  • {Colors.CYAN}Cyan cloud{Colors.NC} = RTAB-Map fused 3D map")
     print(f"  • {Colors.RED}Red points{Colors.NC} = Detected obstacles")
     print(f"  • {Colors.BLUE}2D grid{Colors.NC} = Occupancy map")
-    print(f"  • {Colors.MAGENTA}TF frames{Colors.NC} = Robot coordinate frames")
+    print(f"  • {Colors.GREEN}Robot model{Colors.NC} = Your robot")
+    print(f"  • {Colors.MAGENTA}Image panel{Colors.NC} = Camera RGB view")
     print()
 
     rviz_config = os.path.join(script_dir, "rtabmap_3d_fusion.rviz")
@@ -157,66 +159,27 @@ def main():
     if not check_robot_running(source_cmd):
         sys.exit(1)
 
-    # Ask user what to launch
-    print(f"{Colors.CYAN}What would you like to do?{Colors.NC}")
-    print(f"  {Colors.GREEN}1{Colors.NC} - Launch RTAB-Map only (no visualization)")
-    print(f"  {Colors.GREEN}2{Colors.NC} - Launch RTAB-Map + RViz (recommended)")
-    print(f"  {Colors.GREEN}3{Colors.NC} - Launch RViz only (RTAB-Map already running)")
-    print()
-
-    try:
-        choice = input(f"{Colors.YELLOW}Enter choice [1-3]: {Colors.NC}").strip()
-    except KeyboardInterrupt:
-        print(f"\n{Colors.YELLOW}Cancelled.{Colors.NC}")
-        sys.exit(0)
-
     processes = []
 
     try:
-        if choice == "1":
-            # Launch RTAB-Map only
-            rtabmap_proc = launch_rtabmap(source_cmd, workspace_root)
-            processes.append(rtabmap_proc)
+        # Always launch RTAB-Map + RViz (option 2)
+        rtabmap_proc = launch_rtabmap(source_cmd, workspace_root)
+        processes.append(rtabmap_proc)
 
-            # Stream output
-            print(f"\n{Colors.YELLOW}RTAB-Map Output:{Colors.NC}")
-            print(f"{Colors.BLUE}{'─' * 65}{Colors.NC}")
-            for line in rtabmap_proc.stdout:
-                print(line, end='')
+        # Wait a bit for RTAB-Map to initialize
+        print(f"{Colors.YELLOW}Waiting for RTAB-Map to initialize...{Colors.NC}")
+        time.sleep(5)
 
-        elif choice == "2":
-            # Launch RTAB-Map + RViz
-            rtabmap_proc = launch_rtabmap(source_cmd, workspace_root)
-            processes.append(rtabmap_proc)
+        # Launch RViz
+        rviz_proc = launch_rviz(source_cmd, script_dir)
+        processes.append(rviz_proc)
 
-            # Wait a bit for RTAB-Map to initialize
-            print(f"{Colors.YELLOW}Waiting for RTAB-Map to initialize...{Colors.NC}")
-            time.sleep(5)
+        print(f"\n{Colors.GREEN}✓ Both RTAB-Map visualizer and RViz launched!{Colors.NC}")
+        print(f"{Colors.YELLOW}Press Ctrl+C to stop everything{Colors.NC}\n")
 
-            # Launch RViz
-            rviz_proc = launch_rviz(source_cmd, script_dir)
-            processes.append(rviz_proc)
-
-            print(f"\n{Colors.GREEN}✓ Both RTAB-Map and RViz launched!{Colors.NC}")
-            print(f"{Colors.YELLOW}Press Ctrl+C to stop everything{Colors.NC}\n")
-
-            # Wait for processes
-            for proc in processes:
-                proc.wait()
-
-        elif choice == "3":
-            # Launch RViz only
-            rviz_proc = launch_rviz(source_cmd, script_dir)
-            processes.append(rviz_proc)
-
-            print(f"\n{Colors.GREEN}✓ RViz launched!{Colors.NC}")
-            print(f"{Colors.YELLOW}Press Ctrl+C to stop{Colors.NC}\n")
-
-            rviz_proc.wait()
-
-        else:
-            print(f"{Colors.RED}Invalid choice!{Colors.NC}")
-            sys.exit(1)
+        # Wait for processes
+        for proc in processes:
+            proc.wait()
 
     except KeyboardInterrupt:
         print(f"\n\n{Colors.YELLOW}Stopping...{Colors.NC}")
