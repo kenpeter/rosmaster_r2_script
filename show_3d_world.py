@@ -204,6 +204,71 @@ def check_camera_node():
         print(f"{YELLOW}⚠ Attempting to start robot anyway...{NC}")
         return start_robot()
 
+def discover_pointcloud_topic():
+    """Discover which point cloud topic is available
+
+    Returns:
+        tuple: (topic_name, topic_type) or (None, None) if not found
+        topic_type can be 'colored' or 'depth_only'
+    """
+    try:
+        result = run_ros_cmd("timeout 2 ros2 topic list 2>/dev/null", timeout_sec=4)
+        if not result:
+            return None, None
+
+        topics = result.stdout
+
+        # Prefer depth_registered (contains RGB data on this camera)
+        if "/camera/depth_registered/points" in topics:
+            return "/camera/depth_registered/points", "colored (registered)"
+
+        # Alternative colored point cloud name
+        if "/camera/depth/color/points" in topics:
+            return "/camera/depth/color/points", "colored"
+
+        # Fallback to depth-only point cloud (XYZ)
+        if "/camera/depth/points" in topics:
+            return "/camera/depth/points", "depth_only"
+
+        # Check for any other point cloud topics
+        for line in topics.split('\n'):
+            if '/camera/' in line and 'point' in line.lower():
+                return line.strip(), "unknown"
+
+        return None, None
+    except:
+        return None, None
+
+def show_all_camera_topics():
+    """Debug: Show all available camera topics"""
+    print(f"\n  {BLUE}DEBUG: All available /camera/* topics:{NC}")
+    try:
+        result = run_ros_cmd("timeout 2 ros2 topic list 2>/dev/null | grep '^/camera/'", timeout_sec=4)
+        if result and result.stdout:
+            topics = result.stdout.strip().split('\n')
+            for topic in topics:
+                if topic:
+                    print(f"    • {topic}")
+
+            # Highlight point cloud topics
+            pointcloud_topics = [t for t in topics if 'point' in t.lower()]
+            if pointcloud_topics:
+                print(f"\n  {BLUE}DEBUG: Point cloud topics found:{NC}")
+                for topic in pointcloud_topics:
+                    print(f"    {GREEN}✓ {topic}{NC}")
+
+                # Auto-discover best topic
+                discovered_topic, topic_type = discover_pointcloud_topic()
+                if discovered_topic:
+                    print(f"\n  {BLUE}DEBUG: Auto-discovered point cloud topic:{NC}")
+                    print(f"    {GREEN}✓ {discovered_topic} ({topic_type}){NC}")
+            else:
+                print(f"\n  {YELLOW}DEBUG: No point cloud topics found yet{NC}")
+        else:
+            print(f"    {YELLOW}No topics found{NC}")
+    except Exception as e:
+        print(f"    {RED}Error listing topics: {e}{NC}")
+
 def check_camera_topics():
     """Check if camera topics exist"""
     print(f"\n{YELLOW}[3/6] Checking camera topics...{NC}")
@@ -255,6 +320,9 @@ def check_camera_topics():
             print(f"{GREEN}✓ Depth camera_info topic exists{NC}")
         else:
             print(f"{RED}✗ Depth camera_info topic missing{NC}")
+
+        # Show all camera topics for debugging
+        show_all_camera_topics()
 
         return has_color and has_depth and has_color_info and has_depth_info
     except:
@@ -320,83 +388,24 @@ def launch_pointcloud_node():
     global pointcloud_process
 
     print(f"\n{YELLOW}[5/6] Launching colored point cloud generator...{NC}")
-
-    # Kill any existing instances
-    subprocess.run("pkill -f 'point_cloud_xyzrgb' 2>/dev/null", shell=True)
-    time.sleep(1)
-
-    # Launch depth_image_proc point cloud node with logging
-    cmd = """
-source /opt/ros/humble/setup.bash
-source /home/jetson/yahboomcar_ros2_ws/software/library_ws/install/setup.bash
-cd /home/jetson/yahboomcar_ros2_ws/yahboomcar_ws
-source install/setup.bash
-export ROS_DOMAIN_ID=28
-export RCUTILS_CONSOLE_OUTPUT_FORMAT="[{severity}] [{name}]: {message}"
-
-ros2 run depth_image_proc point_cloud_xyzrgb_node \
-    --ros-args \
-    -r rgb/image_rect_color:=/camera/color/image_raw \
-    -r rgb/camera_info:=/camera/color/camera_info \
-    -r depth_registered/image_rect:=/camera/depth/image_raw \
-    -r depth_registered/camera_info:=/camera/depth/camera_info \
-    -r points:=/camera/depth/color/points \
-    -p queue_size:=10 \
-    -p exact_sync:=false \
-    --log-level DEBUG
-"""
-
-    pointcloud_process = subprocess.Popen(
-        cmd,
-        shell=True,
-        executable='/bin/bash',
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1
-    )
-
-    print(f"{GREEN}✓ Point cloud node launched (PID: {pointcloud_process.pid}){NC}")
-
-    # Show initial output
-    print(f"{BLUE}Node output:{NC}")
-    time.sleep(2)
-
-    # Read some initial output
-    import select
-    if pointcloud_process.stdout:
-        for _ in range(20):  # Read up to 20 lines or 1 second
-            ready = select.select([pointcloud_process.stdout], [], [], 0.05)
-            if ready[0]:
-                line = pointcloud_process.stdout.readline()
-                if line:
-                    print(f"  {line.rstrip()}")
-            else:
-                break
-
-    # Verify it's running
-    if pointcloud_process.poll() is not None:
-        print(f"{RED}✗ Point cloud node crashed!{NC}")
-        # Print any error output
-        if pointcloud_process.stdout:
-            output = pointcloud_process.stdout.read()
-            if output:
-                print(f"{RED}Error output:{NC}")
-                print(output)
-        return False
-
+    print(f"{GREEN}✓ Using camera built-in point cloud generator (Optimized){NC}")
+    
+    # We don't need to launch anything as the camera driver now handles it
     return True
 
 def verify_pointcloud():
     """Verify colored point cloud is being published"""
     print(f"\n{YELLOW}[6/6] Verifying colored point cloud...{NC}")
 
+    # Show available topics for debugging
+    show_all_camera_topics()
+
     # Wait for topic to appear
-    print(f"  Waiting for /camera/depth/color/points topic...", end="", flush=True)
+    print(f"\n  Waiting for /camera/depth_registered/points topic...", end="", flush=True)
     for i in range(10):
         try:
             result = run_ros_cmd("timeout 2 ros2 topic list 2>/dev/null", timeout_sec=4)
-            if result and "/camera/depth/color/points" in result.stdout:
+            if result and "/camera/depth_registered/points" in result.stdout:
                 print(f" {GREEN}✓{NC}")
                 break
         except:
@@ -421,7 +430,7 @@ def verify_pointcloud():
     # Get topic info
     print(f"\n  {BLUE}Topic info:{NC}")
     try:
-        result = run_ros_cmd("timeout 2 ros2 topic info /camera/depth/color/points 2>/dev/null", timeout_sec=4)
+        result = run_ros_cmd("timeout 2 ros2 topic info /camera/depth_registered/points 2>/dev/null", timeout_sec=4)
         if result:
             for line in result.stdout.split('\n'):
                 if line.strip():
@@ -432,7 +441,7 @@ def verify_pointcloud():
     # Check message type
     print(f"\n  {BLUE}Message type:{NC}")
     try:
-        result = run_ros_cmd("timeout 2 ros2 topic type /camera/depth/color/points 2>/dev/null", timeout_sec=4)
+        result = run_ros_cmd("timeout 2 ros2 topic type /camera/depth_registered/points 2>/dev/null", timeout_sec=4)
         if result:
             print(f"    {result.stdout.strip()}")
     except:
@@ -441,7 +450,7 @@ def verify_pointcloud():
     # Check publishing rate
     print(f"\n  {BLUE}Publishing rate:{NC}", end="", flush=True)
     try:
-        result = run_ros_cmd("timeout 5 ros2 topic hz /camera/depth/color/points 2>&1", timeout_sec=7)
+        result = run_ros_cmd("timeout 5 ros2 topic hz /camera/depth_registered/points 2>&1", timeout_sec=7)
         if result:
             # Extract rate info
             for line in result.stdout.split('\n'):
@@ -456,13 +465,13 @@ def verify_pointcloud():
     # Check if publishing
     print(f"\n  {BLUE}Checking if point cloud data is publishing...{NC}", end="", flush=True)
     try:
-        result = run_ros_cmd("timeout 5 ros2 topic echo /camera/depth/color/points --once >/dev/null 2>&1", timeout_sec=7)
+        result = run_ros_cmd("timeout 5 ros2 topic echo /camera/depth_registered/points --once >/dev/null 2>&1", timeout_sec=7)
         if result.returncode == 0:
             print(f" {GREEN}✓ YES! Data is flowing!{NC}")
 
             # Try to get a sample of the data
             print(f"\n  {BLUE}Sample point cloud data (first few points):{NC}")
-            result = run_ros_cmd("timeout 3 ros2 topic echo /camera/depth/color/points --once 2>/dev/null | head -30", timeout_sec=5)
+            result = run_ros_cmd("timeout 3 ros2 topic echo /camera/depth_registered/points --once 2>/dev/null | head -30", timeout_sec=5)
             if result and result.stdout:
                 print(f"    {result.stdout[:500]}...")
 
@@ -543,7 +552,7 @@ def verify_final_setup():
     # Check point cloud is publishing
     print(f"  Checking point cloud data flow... ", end="", flush=True)
     try:
-        result = run_ros_cmd("timeout 3 ros2 topic hz /camera/depth/color/points 2>&1 | grep -i 'average'", timeout_sec=5)
+        result = run_ros_cmd("timeout 3 ros2 topic hz /camera/depth_registered/points 2>&1 | grep -i 'average'", timeout_sec=5)
         if result and result.returncode == 0:
             rate = result.stdout.strip()
             print(f"{GREEN}✓{NC}")
@@ -557,13 +566,37 @@ def verify_final_setup():
     print(f"  Checking RViz subscription... ", end="", flush=True)
     time.sleep(2)  # Give RViz time to subscribe
     try:
-        result = run_ros_cmd("timeout 2 ros2 topic info /camera/depth/color/points 2>/dev/null", timeout_sec=4)
+        result = run_ros_cmd("timeout 2 ros2 topic info /camera/depth_registered/points 2>/dev/null", timeout_sec=4)
         if result and "Subscription count: 1" in result.stdout:
             print(f"{GREEN}✓ RViz is subscribed{NC}")
         else:
             print(f"{YELLOW}⚠ Waiting for RViz...{NC}")
     except:
         print(f"{YELLOW}⚠ Waiting for RViz...{NC}")
+
+    # Enhanced debug: Check point cloud frame_id and sample data
+    print(f"\n  {BLUE}DEBUG: Checking point cloud details...{NC}")
+    try:
+        # Get frame_id from point cloud
+        result = run_ros_cmd("timeout 3 ros2 topic echo /camera/depth_registered/points --once 2>/dev/null | grep 'frame_id' | head -1", timeout_sec=5)
+        if result and result.stdout:
+            print(f"    Frame ID: {result.stdout.strip()}")
+
+        # Get point cloud size info
+        result = run_ros_cmd("timeout 3 ros2 topic echo /camera/depth_registered/points --once 2>/dev/null | grep -E '(width|height):' | head -2", timeout_sec=5)
+        if result and result.stdout:
+            lines = result.stdout.strip().split('\n')
+            if len(lines) >= 2:
+                width = lines[0].split(':')[-1].strip() if ':' in lines[0] else '?'
+                height = lines[1].split(':')[-1].strip() if ':' in lines[1] else '?'
+                print(f"    Point cloud size: {width} x {height} points")
+                try:
+                    total_points = int(width) * int(height)
+                    print(f"    {GREEN}Total points per frame: {total_points:,}{NC}")
+                except:
+                    pass
+    except Exception as e:
+        print(f"    {YELLOW}Could not get details (this is OK): {e}{NC}")
 
 def print_success():
     """Print success message"""
@@ -581,7 +614,7 @@ def print_success():
     print(f"\n{BOLD}Data Flow:{NC}")
     print(f"  /camera/color/image_raw  →")
     print(f"  /camera/depth/image_raw  →  Point Cloud Generator")
-    print(f"  /camera/depth/color/points  →  RViz")
+    print(f"  /camera/depth_registered/points  →  RViz")
 
     print(f"\n{GREEN}{BOLD}🌍 Check your RViz window now!{NC}")
     print(f"{BOLD}You should see:{NC}")
@@ -649,7 +682,7 @@ def main():
         status_counter = 0
         while True:
             # Check if processes are still running
-            if pointcloud_process.poll() is not None:
+            if pointcloud_process and pointcloud_process.poll() is not None:
                 print(f"\n{RED}✗ Point cloud node died!{NC}")
                 # Show any final output
                 if pointcloud_process.stdout:
@@ -670,7 +703,7 @@ def main():
 
                 # Check point cloud publishing rate
                 try:
-                    result = run_ros_cmd("timeout 3 ros2 topic hz /camera/depth/color/points 2>&1 | head -3", timeout_sec=5)
+                    result = run_ros_cmd("timeout 3 ros2 topic hz /camera/depth_registered/points 2>&1 | head -3", timeout_sec=5)
                     if result and result.stdout:
                         for line in result.stdout.split('\n'):
                             if 'average rate' in line.lower() or 'min' in line.lower():
@@ -680,7 +713,7 @@ def main():
 
                 # Check number of subscribers
                 try:
-                    result = run_ros_cmd("timeout 2 ros2 topic info /camera/depth/color/points 2>/dev/null", timeout_sec=4)
+                    result = run_ros_cmd("timeout 2 ros2 topic info /camera/depth_registered/points 2>/dev/null", timeout_sec=4)
                     if result and result.stdout:
                         for line in result.stdout.split('\n'):
                             if 'Subscription count' in line:
