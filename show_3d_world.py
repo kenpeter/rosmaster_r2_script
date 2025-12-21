@@ -236,6 +236,13 @@ def launch_fusion_vision(source_cmd, script_dir):
         text=True
     )
 
+    # Kill rqt_image_view since we're using RViz panel instead
+    # Give it a moment to start first
+    time.sleep(3)
+    subprocess.run(['pkill', '-f', 'rqt_image_view.*fusion_vision'],
+                   stdout=subprocess.DEVNULL,
+                   stderr=subprocess.DEVNULL)
+
     return process
 
 def launch_rviz(source_cmd, script_dir):
