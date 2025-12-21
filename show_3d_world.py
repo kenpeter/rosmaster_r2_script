@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """
 3D World Viewer - RTAB-Map SLAM + AI Fusion Vision
-Combines SLAM mapping with YOLO11 + DINOv2/v3 object detection
+Single RViz window with 3 panels: AI Fusion (LEFT) + 3D Map (RIGHT) + Info (BOTTOM)
+
+THERMAL OPTIMIZED VERSION - Monitors temperature to prevent shutdown
 """
 
 import os
@@ -9,6 +11,7 @@ import sys
 import subprocess
 import time
 import signal
+import threading
 
 # Color codes
 class Colors:
@@ -20,26 +23,98 @@ class Colors:
     MAGENTA = '\033[0;35m'
     NC = '\033[0m'  # No Color
 
+# Global flag for temperature monitoring
+temp_warning_shown = False
+shutdown_requested = False
+
+def get_max_temperature():
+    """Get the maximum temperature from all thermal zones"""
+    try:
+        temps = []
+        with open('/sys/devices/virtual/thermal/thermal_zone0/temp', 'r') as f:
+            temps.append(int(f.read().strip()) / 1000.0)  # Convert millidegrees to degrees
+        with open('/sys/devices/virtual/thermal/thermal_zone1/temp', 'r') as f:
+            temps.append(int(f.read().strip()) / 1000.0)
+        return max(temps)
+    except:
+        return 0
+
+def get_current_power_mode():
+    """Get current nvpmodel power mode"""
+    try:
+        result = subprocess.run(['sudo', 'nvpmodel', '-q'], capture_output=True, text=True)
+        # Extract mode number from output like "NV Power Mode: MAXN_SUPER\n0"
+        lines = result.stdout.strip().split('\n')
+        return int(lines[-1])
+    except:
+        return -1
+
+def recommend_power_mode():
+    """Check and recommend power mode for thermal management"""
+    current_mode = get_current_power_mode()
+    temp = get_max_temperature()
+
+    print(f"{Colors.CYAN}{'=' * 70}{Colors.NC}")
+    print(f"{Colors.CYAN}Thermal Check{Colors.NC}")
+    print(f"{Colors.CYAN}{'=' * 70}{Colors.NC}")
+    print(f"Current temperature: {Colors.YELLOW}{temp:.1f}°C{Colors.NC}")
+
+    mode_names = {0: "MAXN_SUPER", 1: "10W", 2: "15W", 3: "25W", 4: "40W"}
+    print(f"Current power mode: {Colors.YELLOW}{mode_names.get(current_mode, 'Unknown')} (ID={current_mode}){Colors.NC}")
+
+    # Recommend power mode based on workload
+    if current_mode == 0:  # MAXN_SUPER
+        print(f"\n{Colors.YELLOW}⚠️  WARNING: Running in MAXN_SUPER mode!{Colors.NC}")
+        print(f"{Colors.YELLOW}This workload is very intensive (RTAB-Map + YOLO11 + DINOv3 + RViz){Colors.NC}")
+        print(f"\n{Colors.GREEN}RECOMMENDATION: Switch to 25W mode to prevent thermal shutdown{Colors.NC}")
+        print(f"  Run: {Colors.CYAN}sudo nvpmodel -m 3{Colors.NC}")
+        print(f"\nOr for even cooler operation:")
+        print(f"  15W mode: {Colors.CYAN}sudo nvpmodel -m 2{Colors.NC}")
+        print()
+
+        response = input(f"{Colors.YELLOW}Continue anyway? (y/N): {Colors.NC}").strip().lower()
+        if response != 'y':
+            print(f"{Colors.RED}Exiting. Please switch power mode and try again.{Colors.NC}")
+            return False
+
+    print(f"{Colors.GREEN}✓ Starting with current power mode{Colors.NC}")
+    print()
+    return True
+
+def monitor_temperature(stop_event):
+    """Monitor temperature in background thread"""
+    global temp_warning_shown, shutdown_requested
+
+    while not stop_event.is_set():
+        temp = get_max_temperature()
+
+        # Warn at 75°C
+        if temp > 75 and not temp_warning_shown:
+            print(f"\n{Colors.YELLOW}⚠️  HIGH TEMPERATURE: {temp:.1f}°C{Colors.NC}")
+            print(f"{Colors.YELLOW}Consider closing some processes or switching to lower power mode{Colors.NC}\n")
+            temp_warning_shown = True
+
+        # Critical at 85°C
+        if temp > 85:
+            print(f"\n{Colors.RED}🚨 CRITICAL TEMPERATURE: {temp:.1f}°C{Colors.NC}")
+            print(f"{Colors.RED}Shutting down to prevent thermal damage...{Colors.NC}\n")
+            shutdown_requested = True
+            stop_event.set()
+            break
+
+        time.sleep(5)  # Check every 5 seconds
+
 def print_banner():
     """Print the startup banner"""
     print(f"{Colors.CYAN}{'=' * 70}{Colors.NC}")
     print(f"{Colors.CYAN}  RTAB-Map 3D SLAM + AI Fusion Vision{Colors.NC}")
+    print(f"{Colors.CYAN}  Integrated RViz Layout{Colors.NC}")
     print(f"{Colors.CYAN}{'=' * 70}{Colors.NC}")
     print()
-    print(f"{Colors.GREEN}Sensors:{Colors.NC}")
-    print(f"  {Colors.GREEN}✓{Colors.NC} YDLidar TG30 (2D scan)")
-    print(f"  {Colors.GREEN}✓{Colors.NC} Astra Plus Camera (RGB-D)")
-    print(f"  {Colors.GREEN}✓{Colors.NC} Robot Odometry (EKF)")
-    print(f"  {Colors.GREEN}✓{Colors.NC} IMU Data")
-    print()
-    print(f"{Colors.BLUE}AI Vision:{Colors.NC}")
-    print(f"  {Colors.BLUE}✓{Colors.NC} YOLO11 - Object Detection")
-    print(f"  {Colors.BLUE}✓{Colors.NC} DINOv2/v3 - Attention Heatmap")
-    print()
-    print(f"{Colors.MAGENTA}Visualization:{Colors.NC}")
-    print(f"  • 3D Point Cloud Map (colorful SLAM map)")
-    print(f"  • Robot Path Tracking (blue trajectory)")
-    print(f"  • AI Fusion Vision Panel (YOLO + DINO)")
+    print(f"{Colors.GREEN}One RViz window with 3 panels:{Colors.NC}")
+    print(f"  LEFT   : AI Fusion Vision (YOLO11 + DINOv3)")
+    print(f"  RIGHT  : 3D SLAM Map (Point Cloud + Path)")
+    print(f"  BOTTOM : RTAB-Map Info")
     print()
 
 def setup_environment():
@@ -104,16 +179,11 @@ def check_robot_running(source_cmd):
 def launch_rtabmap(source_cmd, workspace_root):
     """Launch RTAB-Map SLAM in headless mode (no visualizer)"""
     print(f"{Colors.GREEN}{'=' * 70}{Colors.NC}")
-    print(f"{Colors.GREEN}🚀 Starting RTAB-Map 3D SLAM (headless mode)...{Colors.NC}")
+    print(f"{Colors.GREEN}🚀 Starting RTAB-Map 3D SLAM (headless)...{Colors.NC}")
     print(f"{Colors.GREEN}{'=' * 70}{Colors.NC}")
     print()
-    print(f"{Colors.CYAN}SLAM Tips:{Colors.NC}")
-    print(f"  • Move robot slowly for best mapping quality")
-    print(f"  • Return to start for loop closures (better accuracy)")
-    print(f"  • Database: ~/.ros/rtabmap.db")
-    print()
 
-    # Launch RTAB-Map without its visualizer
+    # Launch RTAB-Map without visualizer
     cmd = f"{source_cmd} && cd {workspace_root} && ros2 launch yahboomcar_bringup rtabmap_slam_launch.py"
 
     process = subprocess.Popen(
@@ -130,7 +200,7 @@ def launch_rtabmap(source_cmd, workspace_root):
 def launch_fusion_vision(source_cmd, script_dir):
     """Launch YOLO11 + DINOv2/v3 fusion vision"""
     print(f"{Colors.BLUE}{'=' * 70}{Colors.NC}")
-    print(f"{Colors.BLUE}🤖 Starting AI Fusion Vision (YOLO11 + DINOv2/v3)...{Colors.NC}")
+    print(f"{Colors.BLUE}🤖 Starting AI Fusion Vision (YOLO11 + DINOv3)...{Colors.NC}")
     print(f"{Colors.BLUE}{'=' * 70}{Colors.NC}")
     print()
 
@@ -149,21 +219,10 @@ def launch_fusion_vision(source_cmd, script_dir):
     return process
 
 def launch_rviz(source_cmd, script_dir):
-    """Launch RViz with SLAM + AI fusion config"""
+    """Launch RViz with 3-panel layout"""
     print(f"{Colors.MAGENTA}{'=' * 70}{Colors.NC}")
-    print(f"{Colors.MAGENTA}🎨 Launching RViz2 - Integrated Visualization{Colors.NC}")
+    print(f"{Colors.MAGENTA}🎨 Launching RViz2 - Integrated View{Colors.NC}")
     print(f"{Colors.MAGENTA}{'=' * 70}{Colors.NC}")
-    print()
-    print(f"{Colors.YELLOW}Main 3D View:{Colors.NC}")
-    print(f"  • {Colors.CYAN}Colorful point cloud{Colors.NC} = 3D SLAM map")
-    print(f"  • {Colors.BLUE}Blue path{Colors.NC} = Robot trajectory")
-    print(f"  • {Colors.YELLOW}Yellow points{Colors.NC} = LiDAR scan")
-    print(f"  • {Colors.GREEN}Robot model{Colors.NC} = Your robot")
-    print()
-    print(f"{Colors.YELLOW}AI Fusion Vision Panel:{Colors.NC}")
-    print(f"  • {Colors.GREEN}Green boxes{Colors.NC} = YOLO11 object detection")
-    print(f"  • {Colors.RED}Red/Yellow heatmap{Colors.NC} = DINOv2/v3 attention")
-    print(f"  • Shows what AI 'sees' as important")
     print()
 
     rviz_config = os.path.join(script_dir, "rtabmap_slam_fusion.rviz")
@@ -179,7 +238,13 @@ def launch_rviz(source_cmd, script_dir):
 
 def main():
     """Main function"""
+    global shutdown_requested
+
     print_banner()
+
+    # Thermal check and power mode recommendation
+    if not recommend_power_mode():
+        sys.exit(1)
 
     # Setup environment
     env, workspace_root, script_dir, source_cmd = setup_environment()
@@ -190,68 +255,94 @@ def main():
 
     processes = []
 
+    # Start temperature monitoring thread
+    stop_event = threading.Event()
+    temp_thread = threading.Thread(target=monitor_temperature, args=(stop_event,), daemon=True)
+    temp_thread.start()
+    print(f"{Colors.GREEN}✓ Temperature monitoring active{Colors.NC}\n")
+
     try:
-        # 1. Launch RTAB-Map SLAM (headless)
-        rtabmap_proc = launch_rtabmap(source_cmd, workspace_root)
-        processes.append(rtabmap_proc)
+        # comment out overheat
+        # 1. Launch RTAB-Map SLAM (headless - no visualizer)
+        #rtabmap_proc = launch_rtabmap(source_cmd, workspace_root)
+        #processes.append(rtabmap_proc)
 
         # Wait for RTAB-Map to initialize
-        print(f"{Colors.YELLOW}⏳ Waiting for RTAB-Map to initialize...{Colors.NC}")
+        print(f"{Colors.YELLOW}⏳ Waiting for RTAB-Map to initialize (5s)...{Colors.NC}")
         time.sleep(5)
 
         # 2. Launch AI Fusion Vision
-        fusion_proc = launch_fusion_vision(source_cmd, script_dir)
-        processes.append(fusion_proc)
+        #fusion_proc = launch_fusion_vision(source_cmd, script_dir)
+        #processes.append(fusion_proc)
 
         # Wait for AI models to load
-        print(f"{Colors.YELLOW}⏳ Waiting for AI models to load...{Colors.NC}")
+        print(f"{Colors.YELLOW}⏳ Waiting for AI models to load (8s)...{Colors.NC}")
         time.sleep(8)
 
-        # 3. Launch RViz with integrated view
+        # 3. Launch RViz with 3-panel layout
         rviz_proc = launch_rviz(source_cmd, script_dir)
         processes.append(rviz_proc)
 
         print(f"\n{Colors.GREEN}{'=' * 70}{Colors.NC}")
-        print(f"{Colors.GREEN}✅ All systems launched successfully!{Colors.NC}")
+        print(f"{Colors.GREEN}✅ RViz launched with integrated view!{Colors.NC}")
         print(f"{Colors.GREEN}{'=' * 70}{Colors.NC}")
         print()
-        print(f"{Colors.CYAN}Running:{Colors.NC}")
-        print(f"  1. RTAB-Map 3D SLAM")
-        print(f"  2. YOLO11 + DINOv2/v3 AI Fusion Vision")
-        print(f"  3. RViz2 Integrated Visualization")
+        print(f"{Colors.CYAN}RViz Panels:{Colors.NC}")
+        print(f"  LEFT   : AI Fusion Vision (YOLO11 + DINOv3 heatmap)")
+        print(f"  RIGHT  : 3D SLAM Map (colorful point cloud + blue path)")
+        print(f"  BOTTOM : RTAB-Map Info (loop closures, memory, etc.)")
         print()
-        print(f"{Colors.YELLOW}💡 TIP: In RViz2, you can:{Colors.NC}")
-        print(f"  • Rotate 3D view with mouse")
-        print(f"  • Resize the AI Fusion Vision panel")
-        print(f"  • Watch the blue path track your robot")
-        print(f"  • See objects detected by YOLO11 with green boxes")
+        print(f"{Colors.YELLOW}💡 TIPS:{Colors.NC}")
+        print(f"  • Resize panels by dragging the dividers")
+        print(f"  • Rotate 3D map with mouse in RIGHT panel")
+        print(f"  • Green boxes in LEFT = YOLO detections")
+        print(f"  • Heatmap colors in LEFT = DINOv3 attention")
+        print(f"  • Blue path in RIGHT = robot trajectory")
+        print(f"  • BOTTOM panel shows RTAB-Map statistics")
         print()
         print(f"{Colors.YELLOW}Press Ctrl+C to stop everything{Colors.NC}\n")
 
-        # Wait for processes
-        for proc in processes:
-            proc.wait()
+        # Wait for processes or thermal shutdown
+        while True:
+            # Check if thermal shutdown requested
+            if shutdown_requested:
+                print(f"\n{Colors.RED}⚠️  Thermal shutdown initiated!{Colors.NC}")
+                break
+
+            # Check if any process has terminated
+            for proc in processes:
+                if proc.poll() is not None:
+                    break
+
+            time.sleep(0.5)
 
     except KeyboardInterrupt:
         print(f"\n\n{Colors.YELLOW}🛑 Stopping all systems...{Colors.NC}")
-        for proc in processes:
-            try:
-                proc.terminate()
-                proc.wait(timeout=5)
-            except:
-                proc.kill()
-        print(f"{Colors.GREEN}✅ All systems stopped{Colors.NC}")
 
     except Exception as e:
         print(f"\n{Colors.RED}❌ Error: {e}{Colors.NC}")
         import traceback
         traceback.print_exc()
+
+    finally:
+        # Stop temperature monitoring
+        stop_event.set()
+
+        # Cleanup all processes
         for proc in processes:
             try:
-                proc.kill()
+                proc.terminate()
+                proc.wait(timeout=5)
             except:
-                pass
-        sys.exit(1)
+                try:
+                    proc.kill()
+                except:
+                    pass
+
+        if shutdown_requested:
+            print(f"{Colors.RED}✅ Thermal protection shutdown completed{Colors.NC}")
+        else:
+            print(f"{Colors.GREEN}✅ All systems stopped{Colors.NC}")
 
 if __name__ == "__main__":
     main()
