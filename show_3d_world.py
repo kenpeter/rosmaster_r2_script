@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-3D World Viewer - RTAB-Map SLAM with YDLidar TG30 + Astra Camera Fusion
-Combines sensor fusion launch and RViz visualization
+3D World Viewer - RTAB-Map SLAM + AI Fusion Vision
+Combines SLAM mapping with YOLO11 + DINOv2/v3 object detection
 """
 
 import os
@@ -22,9 +22,9 @@ class Colors:
 
 def print_banner():
     """Print the startup banner"""
-    print(f"{Colors.CYAN}{'=' * 65}{Colors.NC}")
-    print(f"{Colors.CYAN}  RTAB-Map 3D SLAM - Sensor Fusion & Visualization{Colors.NC}")
-    print(f"{Colors.CYAN}{'=' * 65}{Colors.NC}")
+    print(f"{Colors.CYAN}{'=' * 70}{Colors.NC}")
+    print(f"{Colors.CYAN}  RTAB-Map 3D SLAM + AI Fusion Vision{Colors.NC}")
+    print(f"{Colors.CYAN}{'=' * 70}{Colors.NC}")
     print()
     print(f"{Colors.GREEN}Sensors:{Colors.NC}")
     print(f"  {Colors.GREEN}✓{Colors.NC} YDLidar TG30 (2D scan)")
@@ -32,10 +32,14 @@ def print_banner():
     print(f"  {Colors.GREEN}✓{Colors.NC} Robot Odometry (EKF)")
     print(f"  {Colors.GREEN}✓{Colors.NC} IMU Data")
     print()
-    print(f"{Colors.BLUE}Output Topics:{Colors.NC}")
-    print(f"  • /cloud_map - Complete 3D fused map")
-    print(f"  • /cloud_obstacles - Detected obstacles")
-    print(f"  • /map - 2D occupancy grid")
+    print(f"{Colors.BLUE}AI Vision:{Colors.NC}")
+    print(f"  {Colors.BLUE}✓{Colors.NC} YOLO11 - Object Detection")
+    print(f"  {Colors.BLUE}✓{Colors.NC} DINOv2/v3 - Attention Heatmap")
+    print()
+    print(f"{Colors.MAGENTA}Visualization:{Colors.NC}")
+    print(f"  • 3D Point Cloud Map (colorful SLAM map)")
+    print(f"  • Robot Path Tracking (blue trajectory)")
+    print(f"  • AI Fusion Vision Panel (YOLO + DINO)")
     print()
 
 def setup_environment():
@@ -98,20 +102,41 @@ def check_robot_running(source_cmd):
         return False
 
 def launch_rtabmap(source_cmd, workspace_root):
-    """Launch RTAB-Map SLAM in background"""
-    print(f"{Colors.GREEN}{'=' * 65}{Colors.NC}")
-    print(f"{Colors.GREEN}🚀 Starting RTAB-Map 3D SLAM...{Colors.NC}")
-    print(f"{Colors.GREEN}{'=' * 65}{Colors.NC}")
+    """Launch RTAB-Map SLAM in headless mode (no visualizer)"""
+    print(f"{Colors.GREEN}{'=' * 70}{Colors.NC}")
+    print(f"{Colors.GREEN}🚀 Starting RTAB-Map 3D SLAM (headless mode)...{Colors.NC}")
+    print(f"{Colors.GREEN}{'=' * 70}{Colors.NC}")
     print()
-    print(f"{Colors.CYAN}TIPS:{Colors.NC}")
-    print(f"  • Move robot slowly for best mapping")
-    print(f"  • Loop closures improve map accuracy")
+    print(f"{Colors.CYAN}SLAM Tips:{Colors.NC}")
+    print(f"  • Move robot slowly for best mapping quality")
+    print(f"  • Return to start for loop closures (better accuracy)")
     print(f"  • Database: ~/.ros/rtabmap.db")
     print()
 
+    # Launch RTAB-Map without its visualizer
     cmd = f"{source_cmd} && cd {workspace_root} && ros2 launch yahboomcar_bringup rtabmap_slam_launch.py"
 
-    # Launch RTAB-Map
+    process = subprocess.Popen(
+        cmd,
+        shell=True,
+        executable='/bin/bash',
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True
+    )
+
+    return process
+
+def launch_fusion_vision(source_cmd, script_dir):
+    """Launch YOLO11 + DINOv2/v3 fusion vision"""
+    print(f"{Colors.BLUE}{'=' * 70}{Colors.NC}")
+    print(f"{Colors.BLUE}🤖 Starting AI Fusion Vision (YOLO11 + DINOv2/v3)...{Colors.NC}")
+    print(f"{Colors.BLUE}{'=' * 70}{Colors.NC}")
+    print()
+
+    fusion_script = os.path.join(script_dir, "test_fusion_live.py")
+    cmd = f"{source_cmd} && python3 {fusion_script}"
+
     process = subprocess.Popen(
         cmd,
         shell=True,
@@ -124,20 +149,24 @@ def launch_rtabmap(source_cmd, workspace_root):
     return process
 
 def launch_rviz(source_cmd, script_dir):
-    """Launch RViz with fusion config"""
-    print(f"{Colors.GREEN}Launching RViz with comprehensive 3D visualization...{Colors.NC}")
+    """Launch RViz with SLAM + AI fusion config"""
+    print(f"{Colors.MAGENTA}{'=' * 70}{Colors.NC}")
+    print(f"{Colors.MAGENTA}🎨 Launching RViz2 - Integrated Visualization{Colors.NC}")
+    print(f"{Colors.MAGENTA}{'=' * 70}{Colors.NC}")
     print()
-    print(f"{Colors.YELLOW}RViz displays:{Colors.NC}")
-    print(f"  • {Colors.YELLOW}Yellow points{Colors.NC} = YDLidar TG30 2D scan")
-    print(f"  • {Colors.CYAN}RGB cloud{Colors.NC} = Camera depth point cloud")
-    print(f"  • {Colors.CYAN}Cyan cloud{Colors.NC} = RTAB-Map fused 3D map")
-    print(f"  • {Colors.RED}Red points{Colors.NC} = Detected obstacles")
-    print(f"  • {Colors.BLUE}2D grid{Colors.NC} = Occupancy map")
+    print(f"{Colors.YELLOW}Main 3D View:{Colors.NC}")
+    print(f"  • {Colors.CYAN}Colorful point cloud{Colors.NC} = 3D SLAM map")
+    print(f"  • {Colors.BLUE}Blue path{Colors.NC} = Robot trajectory")
+    print(f"  • {Colors.YELLOW}Yellow points{Colors.NC} = LiDAR scan")
     print(f"  • {Colors.GREEN}Robot model{Colors.NC} = Your robot")
-    print(f"  • {Colors.MAGENTA}Image panel{Colors.NC} = Camera RGB view")
+    print()
+    print(f"{Colors.YELLOW}AI Fusion Vision Panel:{Colors.NC}")
+    print(f"  • {Colors.GREEN}Green boxes{Colors.NC} = YOLO11 object detection")
+    print(f"  • {Colors.RED}Red/Yellow heatmap{Colors.NC} = DINOv2/v3 attention")
+    print(f"  • Shows what AI 'sees' as important")
     print()
 
-    rviz_config = os.path.join(script_dir, "rtabmap_3d_fusion.rviz")
+    rviz_config = os.path.join(script_dir, "rtabmap_slam_fusion.rviz")
     cmd = f"{source_cmd} && rviz2 -d {rviz_config}"
 
     process = subprocess.Popen(
@@ -162,19 +191,41 @@ def main():
     processes = []
 
     try:
-        # Always launch RTAB-Map + RViz (option 2)
+        # 1. Launch RTAB-Map SLAM (headless)
         rtabmap_proc = launch_rtabmap(source_cmd, workspace_root)
         processes.append(rtabmap_proc)
 
-        # Wait a bit for RTAB-Map to initialize
-        print(f"{Colors.YELLOW}Waiting for RTAB-Map to initialize...{Colors.NC}")
+        # Wait for RTAB-Map to initialize
+        print(f"{Colors.YELLOW}⏳ Waiting for RTAB-Map to initialize...{Colors.NC}")
         time.sleep(5)
 
-        # Launch RViz
+        # 2. Launch AI Fusion Vision
+        fusion_proc = launch_fusion_vision(source_cmd, script_dir)
+        processes.append(fusion_proc)
+
+        # Wait for AI models to load
+        print(f"{Colors.YELLOW}⏳ Waiting for AI models to load...{Colors.NC}")
+        time.sleep(8)
+
+        # 3. Launch RViz with integrated view
         rviz_proc = launch_rviz(source_cmd, script_dir)
         processes.append(rviz_proc)
 
-        print(f"\n{Colors.GREEN}✓ Both RTAB-Map visualizer and RViz launched!{Colors.NC}")
+        print(f"\n{Colors.GREEN}{'=' * 70}{Colors.NC}")
+        print(f"{Colors.GREEN}✅ All systems launched successfully!{Colors.NC}")
+        print(f"{Colors.GREEN}{'=' * 70}{Colors.NC}")
+        print()
+        print(f"{Colors.CYAN}Running:{Colors.NC}")
+        print(f"  1. RTAB-Map 3D SLAM")
+        print(f"  2. YOLO11 + DINOv2/v3 AI Fusion Vision")
+        print(f"  3. RViz2 Integrated Visualization")
+        print()
+        print(f"{Colors.YELLOW}💡 TIP: In RViz2, you can:{Colors.NC}")
+        print(f"  • Rotate 3D view with mouse")
+        print(f"  • Resize the AI Fusion Vision panel")
+        print(f"  • Watch the blue path track your robot")
+        print(f"  • See objects detected by YOLO11 with green boxes")
+        print()
         print(f"{Colors.YELLOW}Press Ctrl+C to stop everything{Colors.NC}\n")
 
         # Wait for processes
@@ -182,17 +233,19 @@ def main():
             proc.wait()
 
     except KeyboardInterrupt:
-        print(f"\n\n{Colors.YELLOW}Stopping...{Colors.NC}")
+        print(f"\n\n{Colors.YELLOW}🛑 Stopping all systems...{Colors.NC}")
         for proc in processes:
             try:
                 proc.terminate()
                 proc.wait(timeout=5)
             except:
                 proc.kill()
-        print(f"{Colors.GREEN}✓ Stopped{Colors.NC}")
+        print(f"{Colors.GREEN}✅ All systems stopped{Colors.NC}")
 
     except Exception as e:
-        print(f"\n{Colors.RED}Error: {e}{Colors.NC}")
+        print(f"\n{Colors.RED}❌ Error: {e}{Colors.NC}")
+        import traceback
+        traceback.print_exc()
         for proc in processes:
             try:
                 proc.kill()
