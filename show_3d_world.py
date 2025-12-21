@@ -12,6 +12,7 @@ import subprocess
 import time
 import signal
 import threading
+import argparse
 
 # Color codes
 class Colors:
@@ -94,15 +95,34 @@ def monitor_temperature(stop_event):
             print(f"{Colors.YELLOW}Consider closing some processes or switching to lower power mode{Colors.NC}\n")
             temp_warning_shown = True
 
-        # Critical at 85°C
+        # Critical at 85°C - TERMINATE SCRIPT (not shutdown machine)
         if temp > 85:
             print(f"\n{Colors.RED}🚨 CRITICAL TEMPERATURE: {temp:.1f}°C{Colors.NC}")
-            print(f"{Colors.RED}Shutting down to prevent thermal damage...{Colors.NC}\n")
+            print(f"{Colors.RED}⚠️  THERMAL PROTECTION: Terminating script...{Colors.NC}\n")
             shutdown_requested = True
             stop_event.set()
             break
 
         time.sleep(5)  # Check every 5 seconds
+
+def parse_arguments():
+    """Parse command line arguments"""
+    parser = argparse.ArgumentParser(
+        description='RTAB-Map 3D SLAM + AI Fusion Vision Viewer',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog='''
+Examples:
+  ./show_3d_world.py                          # All features ON (default)
+  ./show_3d_world.py --no-rtabmap             # Fusion vision only
+  ./show_3d_world.py --no-fusion              # RTAB-Map only
+  ./show_3d_world.py --no-rtabmap --no-fusion # Minimal (no heavy processing)
+        '''
+    )
+    parser.add_argument('--no-rtabmap', action='store_true',
+                        help='Disable RTAB-Map 3D SLAM')
+    parser.add_argument('--no-fusion', action='store_true',
+                        help='Disable AI Fusion Vision (YOLO11 + DINOv3)')
+    return parser.parse_args()
 
 def print_banner():
     """Print the startup banner"""
@@ -240,7 +260,16 @@ def main():
     """Main function"""
     global shutdown_requested
 
+    # Parse command-line arguments
+    args = parse_arguments()
+
     print_banner()
+
+    # Show enabled features
+    print(f"{Colors.GREEN}Enabled Features:{Colors.NC}")
+    print(f"  RTAB-Map 3D SLAM: {Colors.GREEN if not args.no_rtabmap else Colors.RED}{'ON' if not args.no_rtabmap else 'OFF'}{Colors.NC}")
+    print(f"  AI Fusion Vision: {Colors.GREEN if not args.no_fusion else Colors.RED}{'ON' if not args.no_fusion else 'OFF'}{Colors.NC}")
+    print()
 
     # Thermal check and power mode recommendation
     if not recommend_power_mode():
@@ -262,24 +291,27 @@ def main():
     print(f"{Colors.GREEN}✓ Temperature monitoring active{Colors.NC}\n")
 
     try:
-        # comment out overheat
-        # 1. Launch RTAB-Map SLAM (headless - no visualizer)
-        #rtabmap_proc = launch_rtabmap(source_cmd, workspace_root)
-        #processes.append(rtabmap_proc)
+        # 1. Launch RTAB-Map SLAM (if enabled)
+        if not args.no_rtabmap:
+            rtabmap_proc = launch_rtabmap(source_cmd, workspace_root)
+            processes.append(rtabmap_proc)
 
-        # Wait for RTAB-Map to initialize
-        print(f"{Colors.YELLOW}⏳ Waiting for RTAB-Map to initialize (5s)...{Colors.NC}")
-        time.sleep(5)
+            print(f"{Colors.YELLOW}⏳ Waiting for RTAB-Map to initialize (5s)...{Colors.NC}")
+            time.sleep(5)
+        else:
+            print(f"{Colors.YELLOW}⏭️  Skipping RTAB-Map SLAM{Colors.NC}\n")
 
-        # 2. Launch AI Fusion Vision
-        #fusion_proc = launch_fusion_vision(source_cmd, script_dir)
-        #processes.append(fusion_proc)
+        # 2. Launch AI Fusion Vision (if enabled)
+        if not args.no_fusion:
+            fusion_proc = launch_fusion_vision(source_cmd, script_dir)
+            processes.append(fusion_proc)
 
-        # Wait for AI models to load
-        print(f"{Colors.YELLOW}⏳ Waiting for AI models to load (8s)...{Colors.NC}")
-        time.sleep(8)
+            print(f"{Colors.YELLOW}⏳ Waiting for AI models to load (8s)...{Colors.NC}")
+            time.sleep(8)
+        else:
+            print(f"{Colors.YELLOW}⏭️  Skipping AI Fusion Vision{Colors.NC}\n")
 
-        # 3. Launch RViz with 3-panel layout
+        # 3. Launch RViz with integrated layout
         rviz_proc = launch_rviz(source_cmd, script_dir)
         processes.append(rviz_proc)
 
@@ -287,20 +319,26 @@ def main():
         print(f"{Colors.GREEN}✅ RViz launched with integrated view!{Colors.NC}")
         print(f"{Colors.GREEN}{'=' * 70}{Colors.NC}")
         print()
-        print(f"{Colors.CYAN}RViz Panels:{Colors.NC}")
-        print(f"  LEFT   : AI Fusion Vision (YOLO11 + DINOv3 heatmap)")
-        print(f"  RIGHT  : 3D SLAM Map (colorful point cloud + blue path)")
-        print(f"  BOTTOM : RTAB-Map Info (loop closures, memory, etc.)")
+
+        if not args.no_fusion:
+            print(f"{Colors.CYAN}LEFT PANEL: AI Fusion Vision{Colors.NC}")
+            print(f"  • YOLO11 object detection (green boxes)")
+            print(f"  • DINOv3 attention heatmap (color overlay)")
+            print()
+
+        if not args.no_rtabmap:
+            print(f"{Colors.CYAN}MAIN VIEW: RTAB-Map 3D World{Colors.NC}")
+            print(f"  • Colorful 3D point cloud (RGB from camera)")
+            print(f"  • Blue robot trajectory path")
+            print(f"  • Pose graph with loop closures")
+            print()
+
+        print(f"{Colors.YELLOW}💡 CONTROLS:{Colors.NC}")
+        print(f"  • Rotate 3D view: Middle-click + drag")
+        print(f"  • Zoom: Mouse wheel")
+        print(f"  • Pan: Shift + Middle-click + drag")
         print()
-        print(f"{Colors.YELLOW}💡 TIPS:{Colors.NC}")
-        print(f"  • Resize panels by dragging the dividers")
-        print(f"  • Rotate 3D map with mouse in RIGHT panel")
-        print(f"  • Green boxes in LEFT = YOLO detections")
-        print(f"  • Heatmap colors in LEFT = DINOv3 attention")
-        print(f"  • Blue path in RIGHT = robot trajectory")
-        print(f"  • BOTTOM panel shows RTAB-Map statistics")
-        print()
-        print(f"{Colors.YELLOW}Press Ctrl+C to stop everything{Colors.NC}\n")
+        print(f"{Colors.YELLOW}Press Ctrl+C to stop{Colors.NC}\n")
 
         # Wait for processes or thermal shutdown
         while True:
@@ -340,7 +378,7 @@ def main():
                     pass
 
         if shutdown_requested:
-            print(f"{Colors.RED}✅ Thermal protection shutdown completed{Colors.NC}")
+            print(f"{Colors.RED}✅ Thermal protection: Script terminated (machine still running){Colors.NC}")
         else:
             print(f"{Colors.GREEN}✅ All systems stopped{Colors.NC}")
 

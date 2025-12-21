@@ -164,3 +164,17 @@ systemctl --user status astra_cam
   ros2 topic echo /autonomous/detections --once | jq '.detections[0].attention_score'
 
 
+
+
+  # Full features (default) - RTAB-Map + AI Fusion both ON
+  ./show_3d_world.py
+
+  # Only RTAB-Map 3D mapping
+  ./show_3d_world.py --no-fusion
+
+  # Only AI Fusion Vision
+  ./show_3d_world.py --no-rtabmap
+
+  # Minimal mode (neither enabled)
+  ./show_3d_world.py --no-rtabmap --no-fusion
+
