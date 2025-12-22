@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-DINOv3 Live Feature Visualization
-Single script that runs DINOv3 and displays attention maps
+DINOv2 Live Feature Visualization
+Single script that runs DINOv2 and displays attention maps
 """
 
 import rclpy
@@ -21,11 +21,11 @@ class DinoLiveNode(Node):
         super().__init__('dino_live_test')
 
         self.get_logger().info("=" * 70)
-        self.get_logger().info("  🦖 DINOv3 Live Feature Viewer")
+        self.get_logger().info("  🦖 DINOv2 Live Feature Viewer")
         self.get_logger().info("=" * 70)
 
-        # Load DINOv3 model
-        self.get_logger().info("🤖 Loading DINOv3 model...")
+        # Load DINOv2 model
+        self.get_logger().info("🤖 Loading DINOv2 model...")
 
         try:
             from transformers import AutoImageProcessor, AutoModel
@@ -95,7 +95,7 @@ class DinoLiveNode(Node):
 
         self.get_logger().info("")
         self.get_logger().info("=" * 70)
-        self.get_logger().info("  🎬 DINOv3 Feature Extraction Started")
+        self.get_logger().info("  🎬 DINOv2 Feature Extraction Started")
         self.get_logger().info("=" * 70)
         self.get_logger().info("")
 
@@ -109,16 +109,16 @@ class DinoLiveNode(Node):
             self.get_logger().error(f"Error processing camera frame: {e}")
 
     def process_frame(self, frame):
-        """Run DINOv3 feature extraction and visualize"""
+        """Run DINOv2 feature extraction and visualize"""
         start_time = time.time()
 
-        # Prepare image for DINOv3
+        # Prepare image for DINOv2
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-        # Resize to 224x224 for DINOv3
+        # Resize to 224x224 for DINOv2
         image_resized = cv2.resize(frame_rgb, (224, 224))
 
-        # Process with DINOv3
+        # Process with DINOv2
         with torch.no_grad():
             inputs = self.processor(images=image_resized, return_tensors="pt")
 
@@ -158,7 +158,7 @@ class DinoLiveNode(Node):
             self.last_log_time = current_time
 
     def create_visualization(self, frame, features, fps, inference_time):
-        """Create visualization of DINOv3 features"""
+        """Create visualization of DINOv2 features"""
         # Get feature statistics
         feature_mean = features.mean().item()
         feature_std = features.std().item()
@@ -217,7 +217,7 @@ class DinoLiveNode(Node):
                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
 
         # Add title
-        cv2.putText(blended, "DINOv3 Attention Map", (20, h - 20),
+        cv2.putText(blended, "DINOv2 Attention Map", (20, h - 20),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2)
 
         return blended
@@ -225,7 +225,7 @@ class DinoLiveNode(Node):
 
 def main(args=None):
     print("=" * 70)
-    print("  🚀 DINOv3 Live Feature Visualization")
+    print("  🚀 DINOv2 Live Feature Visualization")
     print("=" * 70)
     print("")
 
@@ -261,7 +261,7 @@ def main(args=None):
     print("🖼️  Launching visualization viewer...")
     print("")
     print("=" * 70)
-    print("  🦖 DINOv3 Feature Visualization")
+    print("  🦖 DINOv2 Feature Visualization")
     print("=" * 70)
     print("")
     print("  You'll see:")
@@ -271,7 +271,7 @@ def main(args=None):
     print("    • Blue = low attention areas")
     print("    • FPS and feature statistics")
     print("")
-    print("  DINOv3 shows what the AI 'pays attention to'")
+    print("  DINOv2 shows what the AI 'pays attention to'")
     print("  in the scene - useful for understanding")
     print("  visual perception!")
     print("")
@@ -319,7 +319,7 @@ def main(args=None):
 
         print("")
         print("=" * 70)
-        print("  ✅ DINOv3 Visualization Stopped")
+        print("  ✅ DINOv2 Visualization Stopped")
         print("=" * 70)
         print("")
 

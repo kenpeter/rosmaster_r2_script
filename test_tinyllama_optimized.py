@@ -152,13 +152,13 @@ def main():
     print(f"   Real-time control: {feasibility}")
 
     # Calculate total cycle time
-    perception_time = 0.15  # YOLO + DINOv3
+    perception_time = 0.15  # YOLO + DINOv2
     llm_time = avg_time
     control_time = 0.05     # Motor commands
     total_cycle = perception_time + llm_time + control_time
 
     print(f"\n📈 Full Control Loop Estimate:")
-    print(f"   Perception (YOLO+DINOv3): ~0.15s")
+    print(f"   Perception (YOLO+DINOv2): ~0.15s")
     print(f"   LLM reasoning:            {avg_time:.2f}s")
     print(f"   Control output:           ~0.05s")
     print(f"   ─────────────────────────────────")

@@ -42,12 +42,12 @@ def main():
     print("")
     print("  This will start:")
     print("    🤖 Robot Hardware (motors, camera, LiDAR, IMU)")
-    print("    🧠 Autonomous Driving (YOLO11, DINOv3, TinyLLM)")
+    print("    🧠 Autonomous Driving (YOLO11, DINOv2, TinyLLM)")
     print("")
     print("  Visualization windows:")
     print("    1. Main Control Terminal (this window)")
     print("    2. YOLO11 Detections (camera view with bounding boxes)")
-    print("    3. DINOv3 Features (attention visualization)")
+    print("    3. DINOv2 Features (attention visualization)")
     print("    4. TinyLLM Reasoning (decision text)")
     print("    5. 3D SLAM World (RViz)")
     print("")
@@ -86,19 +86,19 @@ def main():
             "sleep 3 && ros2 run rqt_image_view rqt_image_view /autonomous/debug_image"
         )
 
-        # 3. Open DINOv3 features viewer
+        # 3. Open DINOv2 features viewer
         dino_cmd = """
         sleep 3
         if ros2 topic list | grep -q '/autonomous/dino_features'; then
             ros2 run rqt_image_view rqt_image_view /autonomous/dino_features
         else
-            echo '⚠️  DINOv3 visualization topic not available yet'
+            echo '⚠️  DINOv2 visualization topic not available yet'
             echo 'Showing detections data instead...'
             echo ''
             ros2 topic echo /autonomous/detections
         fi
         """
-        run_terminal("DINOv3 Features", dino_cmd)
+        run_terminal("DINOv2 Features", dino_cmd)
 
         # 4. Open TinyLLM reasoning viewer
         llm_cmd = """

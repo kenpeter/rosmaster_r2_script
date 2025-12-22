@@ -196,11 +196,11 @@ def main():
         if ros2 topic list | grep -q '/autonomous/dino_features'; then
             ros2 run rqt_image_view rqt_image_view /autonomous/dino_features
         else
-            echo '⚠️  DINOv3 visualization topic not available yet'
+            echo '⚠️  DINOv2 visualization topic not available yet'
             ros2 topic echo /autonomous/detections
         fi
         """
-        run_terminal("DINOv3 Features", dino_cmd)
+        run_terminal("DINOv2 Features", dino_cmd)
         
         llm_cmd = """
         echo 'Waiting for decisions...'

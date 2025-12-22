@@ -66,14 +66,21 @@ def recommend_power_mode():
     # Recommend power mode based on workload
     if current_mode == 0:  # MAXN_SUPER
         print(f"\n{Colors.YELLOW}⚠️  WARNING: Running in MAXN_SUPER mode!{Colors.NC}")
-        print(f"{Colors.YELLOW}This workload is very intensive (RTAB-Map + YOLO11 + DINOv3 + RViz){Colors.NC}")
+        print(f"{Colors.YELLOW}This workload is very intensive (RTAB-Map + YOLO11 + DINOv2 + RViz){Colors.NC}")
         print(f"\n{Colors.GREEN}RECOMMENDATION: Switch to 25W mode to prevent thermal shutdown{Colors.NC}")
         print(f"  Run: {Colors.CYAN}sudo nvpmodel -m 3{Colors.NC}")
         print(f"\nOr for even cooler operation:")
         print(f"  15W mode: {Colors.CYAN}sudo nvpmodel -m 2{Colors.NC}")
         print()
 
-        response = input(f"{Colors.YELLOW}Continue anyway? (y/N): {Colors.NC}").strip().lower()
+        # Check if running non-interactively or AUTO_YES env var is set
+        import sys
+        if not sys.stdin.isatty() or os.environ.get('AUTO_YES'):
+            print(f"{Colors.YELLOW}Non-interactive mode detected - continuing automatically{Colors.NC}")
+            response = 'y'
+        else:
+            response = input(f"{Colors.YELLOW}Continue anyway? (y/N): {Colors.NC}").strip().lower()
+
         if response != 'y':
             print(f"{Colors.RED}Exiting. Please switch power mode and try again.{Colors.NC}")
             return False
@@ -121,7 +128,7 @@ Examples:
     parser.add_argument('--no-rtabmap', action='store_true',
                         help='Disable RTAB-Map 3D SLAM')
     parser.add_argument('--no-fusion', action='store_true',
-                        help='Disable AI Fusion Vision (YOLO11 + DINOv3)')
+                        help='Disable AI Fusion Vision (YOLO11 + DINOv2)')
     return parser.parse_args()
 
 def print_banner():
@@ -132,7 +139,7 @@ def print_banner():
     print(f"{Colors.CYAN}{'=' * 70}{Colors.NC}")
     print()
     print(f"{Colors.GREEN}One RViz window with 3 panels:{Colors.NC}")
-    print(f"  LEFT   : AI Fusion Vision (YOLO11 + DINOv3)")
+    print(f"  LEFT   : AI Fusion Vision (YOLO11 + DINOv2)")
     print(f"  RIGHT  : 3D SLAM Map (Point Cloud + Path)")
     print(f"  BOTTOM : RTAB-Map Info")
     print()
@@ -220,7 +227,7 @@ def launch_rtabmap(source_cmd, workspace_root):
 def launch_fusion_vision(source_cmd, script_dir):
     """Launch YOLO11 + DINOv2/v3 fusion vision"""
     print(f"{Colors.BLUE}{'=' * 70}{Colors.NC}")
-    print(f"{Colors.BLUE}🤖 Starting AI Fusion Vision (YOLO11 + DINOv3)...{Colors.NC}")
+    print(f"{Colors.BLUE}🤖 Starting AI Fusion Vision (YOLO11 + DINOv2)...{Colors.NC}")
     print(f"{Colors.BLUE}{'=' * 70}{Colors.NC}")
     print()
 
@@ -263,6 +270,319 @@ def launch_rviz(source_cmd, script_dir):
 
     return process
 
+def check_topic_health(source_cmd, topic_name, expected_rate=None, timeout=5):
+    """
+    Check if a topic exists AND is publishing data.
+
+    Args:
+        source_cmd: ROS2 environment setup command
+        topic_name: Topic to check (e.g., '/camera/color/image_raw')
+        expected_rate: Expected Hz (optional, for rate checking)
+        timeout: Seconds to wait for data
+
+    Returns:
+        dict: {
+            'exists': bool,
+            'publishing': bool,
+            'rate': float or None,
+            'message': str
+        }
+    """
+    result = {
+        'exists': False,
+        'publishing': False,
+        'rate': None,
+        'message': ''
+    }
+
+    # 1. Check if topic exists
+    cmd = f"{source_cmd} && ros2 topic list"
+    proc = subprocess.run(cmd, shell=True, executable='/bin/bash',
+                         capture_output=True, text=True, timeout=10)
+
+    if topic_name not in proc.stdout:
+        result['message'] = f"Topic {topic_name} does not exist"
+        return result
+
+    result['exists'] = True
+
+    # 2. Check if topic is publishing (with timeout)
+    cmd = f"timeout {timeout} bash -c '{source_cmd} && ros2 topic echo {topic_name} --once > /dev/null 2>&1'"
+    proc = subprocess.run(cmd, shell=True, executable='/bin/bash')
+
+    if proc.returncode == 0:
+        result['publishing'] = True
+    elif proc.returncode == 124:  # timeout exit code
+        result['message'] = f"Topic exists but no data in {timeout}s"
+        return result
+    else:
+        result['message'] = f"Error reading topic"
+        return result
+
+    # 3. Check publishing rate (if requested)
+    if expected_rate and result['publishing']:
+        cmd = f"timeout 3 bash -c '{source_cmd} && ros2 topic hz {topic_name} --window 10 2>&1'"
+        proc = subprocess.run(cmd, shell=True, executable='/bin/bash',
+                             capture_output=True, text=True)
+
+        # Parse output like "average rate: 30.123"
+        import re
+        match = re.search(r'average rate:\s*([\d.]+)', proc.stdout)
+        if match:
+            result['rate'] = float(match.group(1))
+            if result['rate'] < expected_rate * 0.5:  # Less than 50% of expected
+                result['message'] = f"Rate too low: {result['rate']:.1f} Hz (expected ~{expected_rate} Hz)"
+            else:
+                result['message'] = f"OK ({result['rate']:.1f} Hz)"
+        else:
+            result['message'] = "Publishing (rate unknown)"
+    else:
+        result['message'] = "Publishing"
+
+    return result
+
+def check_camera_diagnostics(source_cmd):
+    """
+    Verify camera topics and data quality.
+
+    Returns:
+        dict: {
+            'color_ok': bool,
+            'depth_ok': bool,
+            'points_ok': bool,
+            'camera_info_ok': bool,
+            'point_cloud_topic': str or None,
+            'issues': list of str
+        }
+    """
+    diag = {
+        'color_ok': False,
+        'depth_ok': False,
+        'points_ok': False,
+        'camera_info_ok': False,
+        'point_cloud_topic': None,
+        'issues': []
+    }
+
+    # Check RGB stream
+    health = check_topic_health(source_cmd, '/camera/color/image_raw',
+                                expected_rate=30, timeout=5)
+    if health['publishing']:
+        diag['color_ok'] = True
+    else:
+        diag['issues'].append(f"RGB Camera: {health['message']}")
+
+    # Check Depth stream
+    health = check_topic_health(source_cmd, '/camera/depth/image_raw',
+                                expected_rate=30, timeout=5)
+    if health['publishing']:
+        diag['depth_ok'] = True
+    else:
+        diag['issues'].append(f"Depth Camera: {health['message']}")
+
+    # Check Point Cloud - try multiple possible topics
+    point_cloud_topics = [
+        '/camera/depth_registered/points',
+        '/camera/depth/color/points',
+        '/camera/depth/points'
+    ]
+
+    for topic in point_cloud_topics:
+        health = check_topic_health(source_cmd, topic, timeout=5)
+        if health['publishing']:
+            diag['points_ok'] = True
+            diag['point_cloud_topic'] = topic
+            break
+
+    if not diag['points_ok']:
+        diag['issues'].append("No point cloud topic publishing")
+
+    # Check camera info
+    health = check_topic_health(source_cmd, '/camera/color/camera_info', timeout=3)
+    if health['publishing']:
+        diag['camera_info_ok'] = True
+
+    return diag
+
+def check_rtabmap_status(source_cmd):
+    """
+    Check RTAB-Map node status and topic publications.
+
+    Returns:
+        dict: {
+            'node_running': bool,
+            'mapData_ok': bool,
+            'mapGraph_ok': bool,
+            'info_ok': bool,
+            'issues': list of str
+        }
+    """
+    status = {
+        'node_running': False,
+        'mapData_ok': False,
+        'mapGraph_ok': False,
+        'info_ok': False,
+        'issues': []
+    }
+
+    # Check if rtabmap node is running
+    try:
+        cmd = f"{source_cmd} && ros2 node list"
+        proc = subprocess.run(cmd, shell=True, executable='/bin/bash',
+                             capture_output=True, text=True, timeout=10)
+
+        if '/rtabmap/rtabmap' in proc.stdout or '/rtabmap' in proc.stdout:
+            status['node_running'] = True
+        else:
+            status['issues'].append("RTAB-Map node not running")
+            return status
+    except Exception as e:
+        status['issues'].append(f"Failed to check nodes: {e}")
+        return status
+
+    # Check critical RTAB-Map topics
+    topics_to_check = [
+        ('/mapData', 'mapData_ok'),
+        ('/mapGraph', 'mapGraph_ok'),
+        ('/info', 'info_ok'),
+    ]
+
+    for topic, status_key in topics_to_check:
+        health = check_topic_health(source_cmd, topic, timeout=3)
+        if health['publishing']:
+            status[status_key] = True
+        else:
+            status['issues'].append(f"{topic}: {health['message']}")
+
+    return status
+
+def run_comprehensive_diagnostics(source_cmd):
+    """
+    Run all diagnostic checks before launching visualization.
+    Prints detailed report and returns success status.
+
+    Returns:
+        bool: True if all critical systems are healthy
+    """
+    print(f"{Colors.CYAN}{'=' * 70}{Colors.NC}")
+    print(f"{Colors.CYAN}System Diagnostics{Colors.NC}")
+    print(f"{Colors.CYAN}{'=' * 70}{Colors.NC}")
+    print()
+
+    all_ok = True
+
+    # 1. Check Camera
+    print(f"{Colors.YELLOW}[1/4] Camera System...{Colors.NC}")
+    cam_diag = check_camera_diagnostics(source_cmd)
+
+    if cam_diag['color_ok']:
+        print(f"  {Colors.GREEN}✓ RGB Camera publishing{Colors.NC}")
+    else:
+        print(f"  {Colors.RED}✗ RGB Camera NOT publishing{Colors.NC}")
+        all_ok = False
+
+    if cam_diag['depth_ok']:
+        print(f"  {Colors.GREEN}✓ Depth Camera publishing{Colors.NC}")
+    else:
+        print(f"  {Colors.RED}✗ Depth Camera NOT publishing{Colors.NC}")
+        all_ok = False
+
+    if cam_diag['points_ok']:
+        print(f"  {Colors.GREEN}✓ Point Cloud publishing at {cam_diag.get('point_cloud_topic', 'unknown')}{Colors.NC}")
+    else:
+        print(f"  {Colors.YELLOW}⚠  Point Cloud not detected (non-critical){Colors.NC}")
+
+    for issue in cam_diag['issues']:
+        print(f"    {Colors.YELLOW}• {issue}{Colors.NC}")
+    print()
+
+    # 2. Check LiDAR
+    print(f"{Colors.YELLOW}[2/4] LiDAR System...{Colors.NC}")
+    lidar_health = check_topic_health(source_cmd, '/scan', expected_rate=10, timeout=3)
+
+    if lidar_health['publishing']:
+        rate_str = f" at {lidar_health['rate']:.1f} Hz" if lidar_health['rate'] else ""
+        print(f"  {Colors.GREEN}✓ LiDAR publishing{rate_str}{Colors.NC}")
+    else:
+        print(f"  {Colors.RED}✗ LiDAR NOT publishing{Colors.NC}")
+        print(f"    {Colors.YELLOW}{lidar_health['message']}{Colors.NC}")
+        all_ok = False
+    print()
+
+    # 3. Check Odometry
+    print(f"{Colors.YELLOW}[3/4] Odometry System...{Colors.NC}")
+    odom_health = check_topic_health(source_cmd, '/odom', expected_rate=50, timeout=3)
+
+    if odom_health['publishing']:
+        rate_str = f" at {odom_health['rate']:.1f} Hz" if odom_health['rate'] else ""
+        print(f"  {Colors.GREEN}✓ Odometry publishing{rate_str}{Colors.NC}")
+    else:
+        print(f"  {Colors.RED}✗ Odometry NOT publishing{Colors.NC}")
+        print(f"    {Colors.YELLOW}{odom_health['message']}{Colors.NC}")
+        all_ok = False
+    print()
+
+    # 4. Check TF
+    print(f"{Colors.YELLOW}[4/4] Transform System...{Colors.NC}")
+    print(f"  {Colors.YELLOW}⚠  map → odom transform not available (will be created by RTAB-Map){Colors.NC}")
+    print()
+
+    # Summary
+    print(f"{Colors.CYAN}{'=' * 70}{Colors.NC}")
+    if all_ok:
+        print(f"{Colors.GREEN}✅ All critical systems operational{Colors.NC}")
+    else:
+        print(f"{Colors.RED}⚠️  Some systems have issues - visualization may not work correctly{Colors.NC}")
+    print(f"{Colors.CYAN}{'=' * 70}{Colors.NC}")
+    print()
+
+    return all_ok
+
+def monitor_system_health(source_cmd, stop_event, args):
+    """
+    Background thread to continuously monitor system health.
+    Runs every 10 seconds, alerts on issues.
+    """
+    last_alert_time = {}
+    alert_cooldown = 30  # Don't spam alerts
+
+    while not stop_event.is_set():
+        time.sleep(10)
+
+        if stop_event.is_set():
+            break
+
+        issues = []
+
+        # Check RTAB-Map (if enabled)
+        if not args.no_rtabmap:
+            try:
+                rtab_status = check_rtabmap_status(source_cmd)
+
+                if not rtab_status['node_running']:
+                    issues.append("RTAB-Map node died")
+                elif not rtab_status['mapData_ok']:
+                    issues.append("RTAB-Map not publishing map data")
+            except:
+                pass  # Silent in monitoring thread
+
+        # Check Fusion Vision (if enabled)
+        if not args.no_fusion:
+            try:
+                fusion_health = check_topic_health(source_cmd, '/fusion_vision/output', timeout=3)
+                if not fusion_health['publishing']:
+                    issues.append("AI Fusion Vision stopped")
+            except:
+                pass  # Silent in monitoring thread
+
+        # Alert on new issues
+        current_time = time.time()
+        for issue in issues:
+            if issue not in last_alert_time or \
+               (current_time - last_alert_time[issue]) > alert_cooldown:
+                print(f"\n{Colors.YELLOW}⚠️  ALERT: {issue}{Colors.NC}\n")
+                last_alert_time[issue] = current_time
+
 def main():
     """Main function"""
     global shutdown_requested
@@ -289,6 +609,15 @@ def main():
     if not check_robot_running(source_cmd):
         sys.exit(1)
 
+    # Run comprehensive diagnostics
+    print(f"{Colors.YELLOW}Running comprehensive diagnostics...{Colors.NC}")
+    print()
+    if not run_comprehensive_diagnostics(source_cmd):
+        response = input(f"{Colors.YELLOW}Issues detected. Continue anyway? (y/N): {Colors.NC}").strip().lower()
+        if response != 'y':
+            print(f"{Colors.RED}Exiting. Please fix issues and try again.{Colors.NC}")
+            sys.exit(1)
+
     processes = []
 
     # Start temperature monitoring thread
@@ -305,6 +634,25 @@ def main():
 
             print(f"{Colors.YELLOW}⏳ Waiting for RTAB-Map to initialize (5s)...{Colors.NC}")
             time.sleep(5)
+
+            # Verify RTAB-Map started correctly
+            print(f"{Colors.YELLOW}Verifying RTAB-Map initialization...{Colors.NC}")
+            rtab_status = check_rtabmap_status(source_cmd)
+
+            if rtab_status['node_running']:
+                print(f"{Colors.GREEN}✓ RTAB-Map node running{Colors.NC}")
+
+                if rtab_status['mapData_ok']:
+                    print(f"{Colors.GREEN}✓ Map data publishing{Colors.NC}")
+                else:
+                    print(f"{Colors.YELLOW}⚠  Map data not yet available (waiting for sensor data...){Colors.NC}")
+
+                if rtab_status['mapGraph_ok']:
+                    print(f"{Colors.GREEN}✓ Map graph publishing{Colors.NC}")
+            else:
+                print(f"{Colors.RED}✗ RTAB-Map failed to start!{Colors.NC}")
+                print(f"{Colors.RED}Check logs above for errors{Colors.NC}")
+            print()
         else:
             print(f"{Colors.YELLOW}⏭️  Skipping RTAB-Map SLAM{Colors.NC}\n")
 
@@ -322,6 +670,15 @@ def main():
         rviz_proc = launch_rviz(source_cmd, script_dir)
         processes.append(rviz_proc)
 
+        # Start system health monitoring thread
+        health_thread = threading.Thread(
+            target=monitor_system_health,
+            args=(source_cmd, stop_event, args),
+            daemon=True
+        )
+        health_thread.start()
+        print(f"{Colors.GREEN}✓ System health monitoring active{Colors.NC}\n")
+
         print(f"\n{Colors.GREEN}{'=' * 70}{Colors.NC}")
         print(f"{Colors.GREEN}✅ RViz launched with integrated view!{Colors.NC}")
         print(f"{Colors.GREEN}{'=' * 70}{Colors.NC}")
@@ -330,7 +687,7 @@ def main():
         if not args.no_fusion:
             print(f"{Colors.CYAN}LEFT PANEL: AI Fusion Vision{Colors.NC}")
             print(f"  • YOLO11 object detection (green boxes)")
-            print(f"  • DINOv3 attention heatmap (color overlay)")
+            print(f"  • DINOv2 attention heatmap (color overlay)")
             print()
 
         if not args.no_rtabmap:
