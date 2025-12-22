@@ -25,14 +25,20 @@ class FusionVisionNode(Node):
         self.get_logger().info("=" * 70)
         self.get_logger().info("")
 
-        # Load YOLO11 model
+        # Load YOLO11 model (prefer TensorRT for 3-4x speedup)
         self.get_logger().info("📦 Loading YOLO11 model...")
-        model_path = os.path.expanduser("~/yahboomcar_ros2_ws/yahboomcar_ws/models/yolo11s.pt")
+
+        # Try TensorRT first, fallback to PyTorch
+        tensorrt_path = os.path.expanduser("~/yahboomcar_ros2_ws/yahboomcar_ws/models/yolo11s.engine")
+        pytorch_path = os.path.expanduser("~/yahboomcar_ros2_ws/yahboomcar_ws/models/yolo11s.pt")
+
+        model_path = tensorrt_path if os.path.exists(tensorrt_path) else pytorch_path
+        model_type = "TensorRT (FP16)" if model_path == tensorrt_path else "PyTorch (FP32)"
 
         try:
             from ultralytics import YOLO
             self.yolo_model = YOLO(model_path)
-            self.get_logger().info("✅ YOLO11-Small loaded")
+            self.get_logger().info(f"✅ YOLO11-Small loaded ({model_type})")
         except Exception as e:
             self.get_logger().error(f"❌ Failed to load YOLO11: {e}")
             raise
