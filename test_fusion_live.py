@@ -48,10 +48,11 @@ class FusionVisionNode(Node):
             self.dino_model = AutoModel.from_pretrained(model_name)
             self.get_logger().info("✅ DINOv2-Small loaded")
 
-            # Move to GPU if available
+            # Move to GPU if available and enable FP16
             if torch.cuda.is_available():
                 self.dino_model = self.dino_model.cuda()
-                self.get_logger().info(f"🚀 Using GPU: {torch.cuda.get_device_name(0)}")
+                self.dino_model = self.dino_model.half()  # FP16 for 1.5-2x speedup
+                self.get_logger().info(f"🚀 Using GPU (FP16): {torch.cuda.get_device_name(0)}")
             else:
                 self.get_logger().info("⚠️  Using CPU (slower)")
 
@@ -64,6 +65,10 @@ class FusionVisionNode(Node):
         # Detection parameters
         self.conf_threshold = 0.5
         self.heatmap_alpha = 0.3  # Transparency of heatmap
+
+        # Performance optimization: frame skipping
+        self.frame_counter = 0
+        self.process_every_n_frames = 2  # Process every 2nd frame for 2x speedup
 
         # CV Bridge
         self.bridge = CvBridge()
@@ -118,6 +123,12 @@ class FusionVisionNode(Node):
 
     def camera_callback(self, msg):
         """Process real camera frame"""
+        self.frame_counter += 1
+
+        # Skip frames for performance (thermal optimization)
+        if self.frame_counter % self.process_every_n_frames != 0:
+            return
+
         try:
             # Convert ROS Image to OpenCV
             frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
@@ -182,16 +193,16 @@ class FusionVisionNode(Node):
 
     def get_dino_attention(self, frame):
         """Extract attention map from DINOv2"""
-        # Prepare image for DINOv2
+        # Prepare image for DINOv2 (reduced resolution for performance)
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        image_resized = cv2.resize(frame_rgb, (224, 224))
+        image_resized = cv2.resize(frame_rgb, (128, 128))  # 128x128 for 2-3x speedup
 
         # Process with DINOv2
         with torch.no_grad():
             inputs = self.dino_processor(images=image_resized, return_tensors="pt")
 
             if torch.cuda.is_available():
-                inputs = {k: v.cuda() for k, v in inputs.items()}
+                inputs = {k: v.cuda().half() for k, v in inputs.items()}  # FP16
 
             outputs = self.dino_model(**inputs)
 
