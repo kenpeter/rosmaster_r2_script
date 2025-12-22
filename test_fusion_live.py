@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-YOLO11 + DINOv3 Fusion - Live AI Vision
-Combines object detection (YOLO) with attention visualization (DINOv3)
+YOLO11 + DINOv2 Fusion - Live AI Vision
+Combines object detection (YOLO) with attention visualization (DINOv2)
 """
 
 import rclpy
@@ -21,7 +21,7 @@ class FusionVisionNode(Node):
         super().__init__('fusion_vision_live')
 
         self.get_logger().info("=" * 70)
-        self.get_logger().info("  🤖 YOLO11 + DINOv3 Fusion Vision")
+        self.get_logger().info("  🤖 YOLO11 + DINOv2 Fusion Vision")
         self.get_logger().info("=" * 70)
         self.get_logger().info("")
 
@@ -37,23 +37,16 @@ class FusionVisionNode(Node):
             self.get_logger().error(f"❌ Failed to load YOLO11: {e}")
             raise
 
-        # Load DINOv3 model
-        self.get_logger().info("🦖 Loading DINOv3 model...")
+        # Load DINOv2 model
+        self.get_logger().info("🦖 Loading DINOv2 model...")
 
         try:
             from transformers import AutoImageProcessor, AutoModel
 
-            # Use DINOv3 if available, fallback to DINOv2
-            try:
-                model_name = 'facebook/dinov3-vit-small'
-                self.dino_processor = AutoImageProcessor.from_pretrained(model_name)
-                self.dino_model = AutoModel.from_pretrained(model_name)
-                self.get_logger().info("✅ DINOv3-ViT-Small loaded")
-            except:
-                model_name = 'facebook/dinov2-small'
-                self.dino_processor = AutoImageProcessor.from_pretrained(model_name)
-                self.dino_model = AutoModel.from_pretrained(model_name)
-                self.get_logger().info("✅ DINOv2-Small loaded (DINOv3 not available)")
+            model_name = 'facebook/dinov2-small'
+            self.dino_processor = AutoImageProcessor.from_pretrained(model_name)
+            self.dino_model = AutoModel.from_pretrained(model_name)
+            self.get_logger().info("✅ DINOv2-Small loaded")
 
             # Move to GPU if available
             if torch.cuda.is_available():
@@ -65,7 +58,7 @@ class FusionVisionNode(Node):
             self.dino_model.eval()
 
         except Exception as e:
-            self.get_logger().error(f"❌ Failed to load DINOv3: {e}")
+            self.get_logger().error(f"❌ Failed to load DINOv2: {e}")
             raise
 
         # Detection parameters
@@ -133,10 +126,10 @@ class FusionVisionNode(Node):
             self.get_logger().error(f"Error processing camera frame: {e}")
 
     def process_frame(self, frame):
-        """Run both YOLO and DINOv3, then fuse visualizations"""
+        """Run both YOLO and DINOv2, then fuse visualizations"""
         total_start_time = time.time()
 
-        # 1. Run DINOv3 for attention heatmap
+        # 1. Run DINOv2 for attention heatmap
         dino_start = time.time()
         attention_map = self.get_dino_attention(frame)
         dino_time = (time.time() - dino_start) * 1000  # ms
@@ -188,12 +181,12 @@ class FusionVisionNode(Node):
             self.last_log_time = current_time
 
     def get_dino_attention(self, frame):
-        """Extract attention map from DINOv3"""
-        # Prepare image for DINOv3
+        """Extract attention map from DINOv2"""
+        # Prepare image for DINOv2
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         image_resized = cv2.resize(frame_rgb, (224, 224))
 
-        # Process with DINOv3
+        # Process with DINOv2
         with torch.no_grad():
             inputs = self.dino_processor(images=image_resized, return_tensors="pt")
 
@@ -225,7 +218,7 @@ class FusionVisionNode(Node):
         return attention_resized
 
     def create_fusion_visualization(self, frame, attention_map, yolo_results):
-        """Fuse DINOv3 heatmap with YOLO detections"""
+        """Fuse DINOv2 heatmap with YOLO detections"""
         # 1. Apply colormap to attention (heatmap)
         attention_colored = cv2.applyColorMap(attention_map, cv2.COLORMAP_JET)
 
@@ -288,12 +281,12 @@ class FusionVisionNode(Node):
         overlay_y += line_height
 
         # Legend
-        cv2.putText(frame, "Heatmap = DINOv3 Attention", (20, overlay_y),
+        cv2.putText(frame, "Heatmap = DINOv2 Attention", (20, overlay_y),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (150, 150, 150), 2)
 
         # Add title at bottom
         h, w = frame.shape[:2]
-        cv2.putText(frame, "YOLO11 + DINOv3 Fusion Vision", (20, h - 20),
+        cv2.putText(frame, "YOLO11 + DINOv2 Fusion Vision", (20, h - 20),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2)
 
         return frame
@@ -301,7 +294,7 @@ class FusionVisionNode(Node):
 
 def main(args=None):
     print("=" * 70)
-    print("  🚀 YOLO11 + DINOv3 Fusion Vision")
+    print("  🚀 YOLO11 + DINOv2 Fusion Vision")
     print("=" * 70)
     print("")
 
@@ -345,13 +338,13 @@ def main(args=None):
     print("    • Labels showing what each object is")
     print("    • Confidence scores")
     print("")
-    print("  DINOv3 (AI Attention):")
+    print("  DINOv2 (AI Attention):")
     print("    • Colored heatmap overlay (background)")
     print("    • Red/Yellow = high attention areas")
     print("    • Blue = low attention areas")
     print("    • Shows what the AI 'sees' as important")
     print("")
-    print("  Watch how DINOv3's attention aligns with YOLO's")
+    print("  Watch how DINOv2's attention aligns with YOLO's")
     print("  detected objects - fascinating AI correlation!")
     print("")
     print("  Press Ctrl+C to stop")

@@ -132,7 +132,7 @@ def print_banner():
     print(f"{Colors.CYAN}{'=' * 70}{Colors.NC}")
     print()
     print(f"{Colors.GREEN}One RViz window with 3 panels:{Colors.NC}")
-    print(f"  LEFT   : AI Fusion Vision (YOLO11 + DINOv3)")
+    print(f"  LEFT   : AI Fusion Vision (YOLO11 + DINOv2)")
     print(f"  RIGHT  : 3D SLAM Map (Point Cloud + Path)")
     print(f"  BOTTOM : RTAB-Map Info")
     print()
@@ -218,9 +218,9 @@ def launch_rtabmap(source_cmd, workspace_root):
     return process
 
 def launch_fusion_vision(source_cmd, script_dir):
-    """Launch YOLO11 + DINOv2/v3 fusion vision"""
+    """Launch YOLO11 + DINOv2 fusion vision"""
     print(f"{Colors.BLUE}{'=' * 70}{Colors.NC}")
-    print(f"{Colors.BLUE}🤖 Starting AI Fusion Vision (YOLO11 + DINOv3)...{Colors.NC}")
+    print(f"{Colors.BLUE}🤖 Starting AI Fusion Vision (YOLO11 + DINOv2)...{Colors.NC}")
     print(f"{Colors.BLUE}{'=' * 70}{Colors.NC}")
     print()
 
@@ -330,7 +330,7 @@ def main():
         if not args.no_fusion:
             print(f"{Colors.CYAN}LEFT PANEL: AI Fusion Vision{Colors.NC}")
             print(f"  • YOLO11 object detection (green boxes)")
-            print(f"  • DINOv3 attention heatmap (color overlay)")
+            print(f"  • DINOv2 attention heatmap (color overlay)")
             print()
 
         if not args.no_rtabmap:

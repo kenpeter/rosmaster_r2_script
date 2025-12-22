@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Vision-Language-Action Pipeline
-YOLO11 + DINOv3 + TinyLlama - Complete AI Vision System
+YOLO11 + DINOv2 + TinyLlama - Complete AI Vision System
 Sees, Understands, and Suggests Actions
 """
 
@@ -39,23 +39,16 @@ class VisionLLMNode(Node):
             self.get_logger().error(f"❌ Failed to load YOLO11: {e}")
             raise
 
-        # Load DINOv3 model
-        self.get_logger().info("🦖 [2/3] Loading DINOv3 model...")
+        # Load DINOv2 model
+        self.get_logger().info("🦖 [2/3] Loading DINOv2 model...")
 
         try:
             from transformers import AutoImageProcessor, AutoModel
 
-            # Use DINOv3 if available, fallback to DINOv2
-            try:
-                model_name = 'facebook/dinov3-vit-small'
-                self.dino_processor = AutoImageProcessor.from_pretrained(model_name)
-                self.dino_model = AutoModel.from_pretrained(model_name)
-                self.get_logger().info("✅ DINOv3-ViT-Small loaded")
-            except:
-                model_name = 'facebook/dinov2-small'
-                self.dino_processor = AutoImageProcessor.from_pretrained(model_name)
-                self.dino_model = AutoModel.from_pretrained(model_name)
-                self.get_logger().info("✅ DINOv2-Small loaded (DINOv3 not available)")
+            model_name = 'facebook/dinov2-small'
+            self.dino_processor = AutoImageProcessor.from_pretrained(model_name)
+            self.dino_model = AutoModel.from_pretrained(model_name)
+            self.get_logger().info("✅ DINOv2-Small loaded")
 
             # Move to GPU if available
             if torch.cuda.is_available():
@@ -64,7 +57,7 @@ class VisionLLMNode(Node):
             self.dino_model.eval()
 
         except Exception as e:
-            self.get_logger().error(f"❌ Failed to load DINOv3: {e}")
+            self.get_logger().error(f"❌ Failed to load DINOv2: {e}")
             raise
 
         # Load TinyLlama LLM
@@ -168,7 +161,7 @@ class VisionLLMNode(Node):
         """Run complete vision-language-action pipeline"""
         total_start_time = time.time()
 
-        # 1. Run DINOv3 for attention heatmap
+        # 1. Run DINOv2 for attention heatmap
         attention_map = self.get_dino_attention(frame)
 
         # 2. Run YOLO for object detection
@@ -211,7 +204,7 @@ class VisionLLMNode(Node):
             self.last_log_time = current_time
 
     def get_dino_attention(self, frame):
-        """Extract attention map from DINOv3"""
+        """Extract attention map from DINOv2"""
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         image_resized = cv2.resize(frame_rgb, (224, 224))
 
@@ -388,7 +381,7 @@ Action: [your suggested action]"""
         """Create complete visualization with vision + LLM overlay"""
         h, w = frame.shape[:2]
 
-        # 1. Apply DINOv3 heatmap
+        # 1. Apply DINOv2 heatmap
         attention_colored = cv2.applyColorMap(attention_map, cv2.COLORMAP_JET)
         blended = cv2.addWeighted(frame, 1 - self.heatmap_alpha, attention_colored, self.heatmap_alpha, 0)
 
@@ -520,14 +513,14 @@ def main(args=None):
     print("")
     print("  VISUAL PERCEPTION:")
     print("    • YOLO11: Green boxes showing detected objects")
-    print("    • DINOv3: Colored heatmap showing visual attention")
+    print("    • DINOv2: Colored heatmap showing visual attention")
     print("")
     print("  AI REASONING (Bottom Panel):")
     print("    • Scene Description: What the AI understands")
     print("    • Suggested Action: What the robot should do")
     print("")
     print("  This is a complete vision-to-action AI pipeline!")
-    print("  The LLM sees what YOLO+DINOv3 detect, then reasons")
+    print("  The LLM sees what YOLO+DINOv2 detect, then reasons")
     print("  about the scene and suggests intelligent actions.")
     print("")
     print("  Press Ctrl+C to stop")
