@@ -1,184 +1,397 @@
 #!/usr/bin/env python3
 """
-Start Autonomous Driving System with Full Visualization
-Python version of start_autonomous_with_viz.sh
+3D World Viewer - RTAB-Map SLAM + AI Fusion Vision
+Single RViz window with 3 panels: AI Fusion (LEFT) + 3D Map (RIGHT) + Info (BOTTOM)
+
+THERMAL OPTIMIZED VERSION - Monitors temperature to prevent shutdown
 """
 
+import os
+import sys
 import subprocess
 import time
-import os
 import signal
-import sys
+import threading
+import argparse
 
-# Configuration
-WORKSPACE_DIR = os.path.expanduser("~/yahboomcar_ros2_ws/yahboomcar_ws")
-SETUP_CMD = "source /opt/ros/humble/setup.bash && source ~/yahboomcar_ros2_ws/yahboomcar_ws/install/setup.bash"
+# Color codes
+class Colors:
+    RED = '\033[0;31m'
+    GREEN = '\033[0;32m'
+    YELLOW = '\033[0;33m'
+    BLUE = '\033[0;34m'
+    CYAN = '\033[0;36m'
+    MAGENTA = '\033[0;35m'
+    NC = '\033[0m'  # No Color
 
-def run_terminal(title, command, geometry=None):
-    """Launch a new gnome-terminal window with the given command"""
-    full_cmd = f"gnome-terminal --title=\"{title}\""
-    if geometry:
-        full_cmd += f" --geometry={geometry}"
-    
-    # Wrap the command to source environment and keep terminal open
-    bash_cmd = f"{SETUP_CMD} && {command}; exec bash"
-    full_cmd += f" -- bash -c '{bash_cmd}'"
-    
-    print(f"🖥️  Opening {title}...")
-    subprocess.Popen(full_cmd, shell=True)
+# Global flag for temperature monitoring
+temp_warning_shown = False
+shutdown_requested = False
 
-def cleanup_processes():
-    """Kill any existing autonomous and robot processes"""
-    print("\n🧹 Cleaning up existing processes...")
-    subprocess.run("pkill -f 'ros2 run autonomous_driving'", shell=True)
-    subprocess.run("pkill -f 'ros2 launch autonomous_driving'", shell=True)
-    subprocess.run("pkill -f 'ros2 launch yahboomcar_bringup'", shell=True)
-    time.sleep(2)
+def get_max_temperature():
+    """Get the maximum temperature from all thermal zones"""
+    try:
+        temps = []
+        with open('/sys/devices/virtual/thermal/thermal_zone0/temp', 'r') as f:
+            temps.append(int(f.read().strip()) / 1000.0)  # Convert millidegrees to degrees
+        with open('/sys/devices/virtual/thermal/thermal_zone1/temp', 'r') as f:
+            temps.append(int(f.read().strip()) / 1000.0)
+        return max(temps)
+    except:
+        return 0
+
+def get_current_power_mode():
+    """Get current nvpmodel power mode"""
+    try:
+        result = subprocess.run(['sudo', 'nvpmodel', '-q'], capture_output=True, text=True)
+        # Extract mode number from output like "NV Power Mode: MAXN_SUPER\n0"
+        lines = result.stdout.strip().split('\n')
+        return int(lines[-1])
+    except:
+        return -1
+
+def recommend_power_mode():
+    """Check and recommend power mode for thermal management"""
+    current_mode = get_current_power_mode()
+    temp = get_max_temperature()
+
+    print(f"{Colors.CYAN}{'=' * 70}{Colors.NC}")
+    print(f"{Colors.CYAN}Thermal Check{Colors.NC}")
+    print(f"{Colors.CYAN}{'=' * 70}{Colors.NC}")
+    print(f"Current temperature: {Colors.YELLOW}{temp:.1f}°C{Colors.NC}")
+
+    mode_names = {0: "MAXN_SUPER", 1: "10W", 2: "15W", 3: "25W", 4: "40W"}
+    print(f"Current power mode: {Colors.YELLOW}{mode_names.get(current_mode, 'Unknown')} (ID={current_mode}){Colors.NC}")
+
+    # Recommend power mode based on workload
+    if current_mode == 0:  # MAXN_SUPER
+        print(f"\n{Colors.YELLOW}⚠️  WARNING: Running in MAXN_SUPER mode!{Colors.NC}")
+        print(f"{Colors.YELLOW}This workload is very intensive (RTAB-Map + YOLO11 + DINOv3 + RViz){Colors.NC}")
+        print(f"\n{Colors.GREEN}RECOMMENDATION: Switch to 25W mode to prevent thermal shutdown{Colors.NC}")
+        print(f"  Run: {Colors.CYAN}sudo nvpmodel -m 3{Colors.NC}")
+        print(f"\nOr for even cooler operation:")
+        print(f"  15W mode: {Colors.CYAN}sudo nvpmodel -m 2{Colors.NC}")
+        print()
+
+        response = input(f"{Colors.YELLOW}Continue anyway? (y/N): {Colors.NC}").strip().lower()
+        if response != 'y':
+            print(f"{Colors.RED}Exiting. Please switch power mode and try again.{Colors.NC}")
+            return False
+
+    print(f"{Colors.GREEN}✓ Starting with current power mode{Colors.NC}")
+    print()
+    return True
+
+def monitor_temperature(stop_event):
+    """Monitor temperature in background thread"""
+    global temp_warning_shown, shutdown_requested
+
+    while not stop_event.is_set():
+        temp = get_max_temperature()
+
+        # Warn at 75°C
+        if temp > 75 and not temp_warning_shown:
+            print(f"\n{Colors.YELLOW}⚠️  HIGH TEMPERATURE: {temp:.1f}°C{Colors.NC}")
+            print(f"{Colors.YELLOW}Consider closing some processes or switching to lower power mode{Colors.NC}\n")
+            temp_warning_shown = True
+
+        # Critical at 85°C - TERMINATE SCRIPT (not shutdown machine)
+        if temp > 85:
+            print(f"\n{Colors.RED}🚨 CRITICAL TEMPERATURE: {temp:.1f}°C{Colors.NC}")
+            print(f"{Colors.RED}⚠️  THERMAL PROTECTION: Terminating script...{Colors.NC}\n")
+            shutdown_requested = True
+            stop_event.set()
+            break
+
+        time.sleep(5)  # Check every 5 seconds
+
+def parse_arguments():
+    """Parse command line arguments"""
+    parser = argparse.ArgumentParser(
+        description='RTAB-Map 3D SLAM + AI Fusion Vision Viewer',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog='''
+Examples:
+  ./show_3d_world.py                          # All features ON (default)
+  ./show_3d_world.py --no-rtabmap             # Fusion vision only
+  ./show_3d_world.py --no-fusion              # RTAB-Map only
+  ./show_3d_world.py --no-rtabmap --no-fusion # Minimal (no heavy processing)
+        '''
+    )
+    parser.add_argument('--no-rtabmap', action='store_true',
+                        help='Disable RTAB-Map 3D SLAM')
+    parser.add_argument('--no-fusion', action='store_true',
+                        help='Disable Autonomous Driving System (YOLO11 + DINOv2 + TinyLLM)')
+    return parser.parse_args()
+
+def print_banner():
+    """Print the startup banner"""
+    print(f"{Colors.CYAN}{'=' * 70}{Colors.NC}")
+    print(f"{Colors.CYAN}  RTAB-Map 3D SLAM + Autonomous Driving{Colors.NC}")
+    print(f"{Colors.CYAN}  Integrated RViz Layout{Colors.NC}")
+    print(f"{Colors.CYAN}{'=' * 70}{Colors.NC}")
+    print()
+    print(f"{Colors.GREEN}One RViz window with integrated panels:{Colors.NC}")
+    print(f"  LEFT   : Perception Output (YOLO11 + DINOv2 detections)")
+    print(f"  RIGHT  : 3D SLAM Map (Point Cloud + Path)")
+    print(f"  BOTTOM : RTAB-Map Info")
+    print(f"\n{Colors.CYAN}Autonomous Pipeline:{Colors.NC}")
+    print(f"  Camera → YOLO + DINOv2 → TinyLLM → Robot Control")
+    print()
+
+def setup_environment():
+    """Setup ROS2 environment"""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    workspace_root = os.path.dirname(script_dir)
+
+    # Source ROS2 environment
+    env = os.environ.copy()
+
+    # Build source commands (single line for subprocess)
+    source_cmd = (
+        f"source /opt/ros/humble/setup.bash && "
+        f"source /home/jetson/yahboomcar_ros2_ws/software/library_ws/install/setup.bash && "
+        f"cd {workspace_root} && "
+        f"source install/setup.bash && "
+        f"export ROS_DOMAIN_ID=28"
+    )
+
+    return env, workspace_root, script_dir, source_cmd
+
+def check_robot_running(source_cmd):
+    """Check if robot system is running"""
+    print(f"{Colors.YELLOW}Checking robot status...{Colors.NC}")
+
+    try:
+        result = subprocess.run(
+            f"{source_cmd} && ros2 topic list",
+            shell=True,
+            executable='/bin/bash',
+            capture_output=True,
+            text=True
+        )
+
+        if "/odom" not in result.stdout:
+            print(f"{Colors.RED}ERROR: Robot not running!{Colors.NC}")
+            print(f"Please start the robot first:")
+            print(f"  {Colors.YELLOW}./scripts/start_robot.sh{Colors.NC}")
+            return False
+
+        # Check sensors
+        lidar_ok = "/scan" in result.stdout
+        camera_ok = "/camera/depth/image_raw" in result.stdout
+
+        if lidar_ok:
+            print(f"{Colors.GREEN}✓ YDLidar TG30 detected{Colors.NC}")
+        else:
+            print(f"{Colors.RED}✗ YDLidar not found{Colors.NC}")
+
+        if camera_ok:
+            print(f"{Colors.GREEN}✓ Astra Camera detected{Colors.NC}")
+        else:
+            print(f"{Colors.RED}✗ Camera not found{Colors.NC}")
+
+        print()
+        return True
+
+    except Exception as e:
+        print(f"{Colors.RED}Error checking robot status: {e}{Colors.NC}")
+        return False
+
+def launch_rtabmap(source_cmd, workspace_root):
+    """Launch RTAB-Map SLAM in headless mode (no visualizer)"""
+    print(f"{Colors.GREEN}{'=' * 70}{Colors.NC}")
+    print(f"{Colors.GREEN}🚀 Starting RTAB-Map 3D SLAM (headless)...{Colors.NC}")
+    print(f"{Colors.GREEN}{'=' * 70}{Colors.NC}")
+    print()
+
+    # Launch RTAB-Map without visualizer
+    cmd = f"{source_cmd} && cd {workspace_root} && ros2 launch yahboomcar_bringup rtabmap_slam_launch.py"
+
+    process = subprocess.Popen(
+        cmd,
+        shell=True,
+        executable='/bin/bash',
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True
+    )
+
+    return process
+
+def launch_autonomous_system(source_cmd, workspace_root):
+    """Launch autonomous driving: Perception (YOLO+DINOv2) + LLM Decision + Control"""
+    print(f"{Colors.BLUE}{'=' * 70}{Colors.NC}")
+    print(f"{Colors.BLUE}🤖 Starting Autonomous Driving System...{Colors.NC}")
+    print(f"{Colors.BLUE}{'=' * 70}{Colors.NC}")
+    print()
+
+    cmd = (
+        f"{source_cmd} && "
+        f"cd {workspace_root} && "
+        f"ros2 launch autonomous_driving autonomous_driving_launch.py "
+        f"enable_autonomous:=false "
+        f"camera_topic:=/camera/color/image_raw "
+        f"decision_rate:=2.0"
+    )
+
+    process = subprocess.Popen(
+        cmd,
+        shell=True,
+        executable='/bin/bash',
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True
+    )
+
+    return process
+
+def launch_rviz(source_cmd, script_dir):
+    """Launch RViz with 3-panel layout"""
+    print(f"{Colors.MAGENTA}{'=' * 70}{Colors.NC}")
+    print(f"{Colors.MAGENTA}🎨 Launching RViz2 - Integrated View{Colors.NC}")
+    print(f"{Colors.MAGENTA}{'=' * 70}{Colors.NC}")
+    print()
+
+    rviz_config = os.path.join(script_dir, "rtabmap_slam_fusion.rviz")
+    cmd = f"{source_cmd} && rviz2 -d {rviz_config}"
+
+    process = subprocess.Popen(
+        cmd,
+        shell=True,
+        executable='/bin/bash'
+    )
+
+    return process
 
 def main():
-    print("="*71)
-    print("  🚀 Starting Complete Autonomous System (Python)")
-    print("="*71)
-    print("")
-    print("  This will start:")
-    print("    🤖 Robot Hardware (motors, camera, LiDAR, IMU)")
-    print("    🧠 Autonomous Driving (YOLO11, DINOv3, TinyLLM)")
-    print("")
-    print("  Visualization windows:")
-    print("    1. Main Control Terminal (this window)")
-    print("    2. YOLO11 Detections (camera view with bounding boxes)")
-    print("    3. DINOv3 Features (attention visualization)")
-    print("    4. TinyLLM Reasoning (decision text)")
-    print("    5. 3D SLAM World (RViz)")
-    print("")
-    print("  To stop everything: Press Ctrl+C")
-    print("="*71)
-    print("")
+    """Main function"""
+    global shutdown_requested
 
-    # Change to workspace directory
-    if os.path.exists(WORKSPACE_DIR):
-        os.chdir(WORKSPACE_DIR)
-    
-    # Cleanup first
-    cleanup_processes()
+    # Parse command-line arguments
+    args = parse_arguments()
+
+    print_banner()
+
+    # Show enabled features
+    print(f"{Colors.GREEN}Enabled Features:{Colors.NC}")
+    print(f"  RTAB-Map 3D SLAM: {Colors.GREEN if not args.no_rtabmap else Colors.RED}{'ON' if not args.no_rtabmap else 'OFF'}{Colors.NC}")
+    print(f"  Autonomous Driving: {Colors.GREEN if not args.no_fusion else Colors.RED}{'ON' if not args.no_fusion else 'OFF'}{Colors.NC}")
+    print()
+
+    # Thermal check and power mode recommendation
+    if not recommend_power_mode():
+        sys.exit(1)
+
+    # Setup environment
+    env, workspace_root, script_dir, source_cmd = setup_environment()
+
+    # Check robot status
+    if not check_robot_running(source_cmd):
+        sys.exit(1)
 
     processes = []
 
+    # Start temperature monitoring thread
+    stop_event = threading.Event()
+    temp_thread = threading.Thread(target=monitor_temperature, args=(stop_event,), daemon=True)
+    temp_thread.start()
+    print(f"{Colors.GREEN}✓ Temperature monitoring active{Colors.NC}\n")
+
     try:
-        # 1. Launch robot hardware first (motors, camera, LiDAR, IMU)
-        print("🤖 Launching robot hardware (motors, camera, LiDAR, IMU)...")
-        robot_cmd = f"{SETUP_CMD} && source ~/yahboomcar_ros2_ws/software/library_ws/install/setup.bash && export ROS_DOMAIN_ID=28 && ros2 launch yahboomcar_bringup yahboomcar_bringup_R2_full_launch.py"
-        robot_launch = subprocess.Popen(robot_cmd, shell=True, executable="/bin/bash")
-        processes.append(robot_launch)
-        print("   Waiting for robot hardware to initialize...")
-        time.sleep(8)
+        # 1. Launch RTAB-Map SLAM (if enabled)
+        if not args.no_rtabmap:
+            rtabmap_proc = launch_rtabmap(source_cmd, workspace_root)
+            processes.append(rtabmap_proc)
 
-        # 2. Launch autonomous driving nodes
-        print("📡 Launching autonomous driving nodes...")
-        launch_cmd = f"{SETUP_CMD} && export ROS_DOMAIN_ID=28 && ros2 launch autonomous_driving autonomous_driving_launch.py enable_autonomous:=true"
-        main_launch = subprocess.Popen(launch_cmd, shell=True, executable="/bin/bash")
-        processes.append(main_launch)
-        time.sleep(5)
+            print(f"{Colors.YELLOW}⏳ Waiting for RTAB-Map to initialize (5s)...{Colors.NC}")
+            time.sleep(5)
+        else:
+            print(f"{Colors.YELLOW}⏭️  Skipping RTAB-Map SLAM{Colors.NC}\n")
 
-        # 2. Open YOLO detections viewer
-        run_terminal(
-            "YOLO Detections",
-            "sleep 3 && ros2 run rqt_image_view rqt_image_view /autonomous/debug_image"
-        )
+        # 2. Launch Autonomous Driving System (if enabled)
+        if not args.no_fusion:
+            autonomous_proc = launch_autonomous_system(source_cmd, workspace_root)
+            processes.append(autonomous_proc)
 
-        # 3. Open DINOv3 features viewer
-        dino_cmd = """
-        sleep 3
-        if ros2 topic list | grep -q '/autonomous/dino_features'; then
-            ros2 run rqt_image_view rqt_image_view /autonomous/dino_features
-        else
-            echo '⚠️  DINOv3 visualization topic not available yet'
-            echo 'Showing detections data instead...'
-            echo ''
-            ros2 topic echo /autonomous/detections
-        fi
-        """
-        run_terminal("DINOv3 Features", dino_cmd)
+            print(f"{Colors.YELLOW}⏳ Waiting for autonomous system to initialize...{Colors.NC}")
+            print(f"{Colors.CYAN}   • Loading YOLO11 model (yolo11s.pt)...{Colors.NC}")
+            print(f"{Colors.CYAN}   • Loading DINOv2 features (facebook/dinov2-small)...{Colors.NC}")
+            print(f"{Colors.CYAN}   • Connecting to TinyLlama via Ollama...{Colors.NC}")
+            time.sleep(12)  # Increased for all 3 nodes to initialize
+        else:
+            print(f"{Colors.YELLOW}⏭️  Skipping Autonomous Driving System{Colors.NC}\n")
 
-        # 4. Open TinyLLM reasoning viewer
-        llm_cmd = """
-        echo '======================================================================='
-        echo '  🤖 TinyLLM Decision Reasoning'
-        echo '======================================================================='
-        echo ''
-        echo 'Waiting for decisions...'
-        echo ''
-        ros2 topic echo /autonomous/decision | while IFS= read -r line; do
-            if [[ $line == *'---'* ]]; then
-                echo '-----------------------------------------------------------------------'
-            elif [[ $line == *'action:'* ]]; then
-                echo \"🎯 $line\"
-            elif [[ $line == *'llm_response:'* ]]; then
-                echo \"💭 $line\"
-            elif [[ $line == *'linear_velocity:'* ]] || [[ $line == *'angular_velocity:'* ]]; then
-                echo \"🚗 $line\"
-            elif [[ $line == *'obstacle_status:'* ]]; then
-                echo \"⚠️  $line\"
-            else
-                echo \"$line\"
-            fi
-        done
-        """
-        run_terminal("TinyLLM Reasoning", llm_cmd, geometry="120x30")
+        # 3. Launch RViz with integrated layout
+        rviz_proc = launch_rviz(source_cmd, script_dir)
+        processes.append(rviz_proc)
 
-        # 5. Open 3D SLAM visualization
-        # Note: calling the python script directly. Assuming it's in scripts/ 
-        slam_cmd = """
-        cd ~/yahboomcar_ros2_ws/yahboomcar_ws/scripts
-        sleep 3
-        ./show_3d_world.py
-        """
-        # Note: Original script called ./show_3d_foxglove.py but the file list shows show_3d_world.py
-        # I'll stick to show_3d_world.py based on file list, or revert if the user insists on foxglove.
-        # The prompt referenced 'show_3d_foxglove.py' in the bash content, but the file list earlier showed 'show_3d_world.py'. 
-        # I will use 'show_3d_world.py' as it exists in the file list I saw.
-        run_terminal("3D SLAM World", slam_cmd)
+        print(f"\n{Colors.GREEN}{'=' * 70}{Colors.NC}")
+        print(f"{Colors.GREEN}✅ RViz launched with integrated view!{Colors.NC}")
+        print(f"{Colors.GREEN}{'=' * 70}{Colors.NC}")
+        print()
 
-        print("")
-        print("✅ All visualization windows launched!")
-        print("")
-        print("=======================================================================")
-        print("  📊 System Status")
-        print("=======================================================================")
-        
-        time.sleep(8)
-        
-        print("Active ROS2 nodes:")
-        subprocess.run(f"{SETUP_CMD} && ros2 node list", shell=True, executable="/bin/bash")
-        
-        print("\nActive topics:")
-        subprocess.run(f"{SETUP_CMD} && ros2 topic list | grep autonomous", shell=True, executable="/bin/bash")
+        if not args.no_fusion:
+            print(f"{Colors.CYAN}LEFT PANEL: AI Fusion Vision{Colors.NC}")
+            print(f"  • YOLO11 object detection (green boxes)")
+            print(f"  • DINOv2 attention heatmap (color overlay)")
+            print()
 
-        print("")
-        print("=======================================================================")
-        print("  🎮 Control Commands")
-        print("=======================================================================")
-        print("  • Stop everything: Press Ctrl+C")
-        print("  • Disable autonomous: ros2 param set /control_node enable_autonomous false")
-        print("  • Check status: ros2 topic hz /autonomous/detections")
-        print("")
-        print("⚠️  Robot is in AUTONOMOUS MODE - monitor carefully!")
-        print("Press Ctrl+C to stop...")
+        if not args.no_rtabmap:
+            print(f"{Colors.CYAN}MAIN VIEW: RTAB-Map 3D World{Colors.NC}")
+            print(f"  • Colorful 3D point cloud (RGB from camera)")
+            print(f"  • Blue robot trajectory path")
+            print(f"  • Pose graph with loop closures")
+            print()
 
-        # Wait for the main launch process
-        main_launch.wait()
+        print(f"{Colors.YELLOW}💡 CONTROLS:{Colors.NC}")
+        print(f"  • Rotate 3D view: Middle-click + drag")
+        print(f"  • Zoom: Mouse wheel")
+        print(f"  • Pan: Shift + Middle-click + drag")
+        print()
+        print(f"{Colors.YELLOW}Press Ctrl+C to stop{Colors.NC}\n")
+
+        # Wait for processes or thermal shutdown
+        while True:
+            # Check if thermal shutdown requested
+            if shutdown_requested:
+                print(f"\n{Colors.RED}⚠️  Thermal shutdown initiated!{Colors.NC}")
+                break
+
+            # Check if any process has terminated
+            for proc in processes:
+                if proc.poll() is not None:
+                    break
+
+            time.sleep(0.5)
 
     except KeyboardInterrupt:
-        print("\n🛑 Stop signal received. Shutting down...")
-    finally:
-        # Kill all launch processes if they're still running
-        for proc in processes:
-            if proc.poll() is None:
-                proc.terminate()
+        print(f"\n\n{Colors.YELLOW}🛑 Stopping all systems...{Colors.NC}")
 
-        # Run cleanup script/commands
-        cleanup_processes()
-        print("✅ System stopped.")
+    except Exception as e:
+        print(f"\n{Colors.RED}❌ Error: {e}{Colors.NC}")
+        import traceback
+        traceback.print_exc()
+
+    finally:
+        # Stop temperature monitoring
+        stop_event.set()
+
+        # Cleanup all processes
+        for proc in processes:
+            try:
+                proc.terminate()
+                proc.wait(timeout=5)
+            except:
+                try:
+                    proc.kill()
+                except:
+                    pass
+
+        if shutdown_requested:
+            print(f"{Colors.RED}✅ Thermal protection: Script terminated (machine still running){Colors.NC}")
+        else:
+            print(f"{Colors.GREEN}✅ All systems stopped{Colors.NC}")
 
 if __name__ == "__main__":
     main()
