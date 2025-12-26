@@ -25,7 +25,13 @@ def stop_processes():
     print("🤖 Stopping robot hardware...")
     subprocess.run("pkill -f 'ros2 launch yahboomcar_bringup'", shell=True)
     subprocess.run("pkill -f 'yahboomcar_base_node'", shell=True)
+    subprocess.run("pkill -f 'yahboom_joy'", shell=True)
     subprocess.run("pkill -f 'Ackman_driver'", shell=True)
+    subprocess.run("pkill -f 'imu_filter_madgwick'", shell=True)
+    subprocess.run("pkill -f 'robot_state_publisher'", shell=True)
+    subprocess.run("pkill -f 'joint_state_publisher'", shell=True)
+    subprocess.run("pkill -f 'ekf_node'", shell=True)
+    subprocess.run("pkill -f 'joy_node'", shell=True)
     time.sleep(1)
 
     print("🔦 Stopping YDLiDAR...")
@@ -48,10 +54,15 @@ def stop_processes():
     subprocess.run("pkill -f 'debug_logger'", shell=True)
     time.sleep(1)
 
+    print("🔧 Stopping ROS2 daemon...")
+    subprocess.run("pkill -f 'ros2-daemon'", shell=True)
+    subprocess.run("pkill -f 'ros2cli.daemon'", shell=True)
+    time.sleep(1)
+
 def verify_stopped():
     """Check if processes are still running"""
     result = subprocess.run(
-        "ps aux | grep -E 'autonomous_driving|yahboomcar_bringup|ydlidar|astra_camera|base_node' | grep -v grep",
+        "ps aux | grep -E 'autonomous_driving|yahboomcar|ydlidar|astra_camera|imu_filter|robot_state|joint_state|ekf_node|joy_node|ros2-daemon' | grep -v grep",
         shell=True,
         capture_output=True,
         text=True
