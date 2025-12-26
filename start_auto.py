@@ -238,10 +238,8 @@ def launch_autonomous_system(source_cmd, workspace_root):
     process = subprocess.Popen(
         cmd,
         shell=True,
-        executable='/bin/bash',
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True
+        executable='/bin/bash'
+        # Output goes directly to terminal so you can see TinyLLM decisions in real-time
     )
 
     return process
