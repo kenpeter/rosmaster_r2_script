@@ -232,7 +232,7 @@ def launch_autonomous_system(source_cmd, workspace_root):
         f"ros2 launch autonomous_driving autonomous_driving_launch.py "
         f"enable_autonomous:=false "
         f"camera_topic:=/camera/color/image_raw "
-        f"decision_rate:=2.0"
+        f"decision_rate:=2.0"  # Optimized with qwen3-fast
     )
 
     process = subprocess.Popen(
@@ -315,7 +315,7 @@ def main():
             print(f"{Colors.YELLOW}⏳ Waiting for autonomous system to initialize...{Colors.NC}")
             print(f"{Colors.CYAN}   • Loading YOLO11 model (yolo11s.pt)...{Colors.NC}")
             print(f"{Colors.CYAN}   • Loading DINOv2 features (facebook/dinov2-small)...{Colors.NC}")
-            print(f"{Colors.CYAN}   • Connecting to TinyLlama via Ollama...{Colors.NC}")
+            print(f"{Colors.CYAN}   • Connecting to Qwen3 0.6B via Ollama (GPU optimized)...{Colors.NC}")
             time.sleep(12)  # Increased for all 3 nodes to initialize
         else:
             print(f"{Colors.YELLOW}⏭️  Skipping Autonomous Driving System{Colors.NC}\n")
