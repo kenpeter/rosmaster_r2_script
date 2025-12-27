@@ -37,7 +37,7 @@ if pgrep -f yahboom_oled > /dev/null; then
 fi
 
 # Cleanup any existing robot processes
-"$SCRIPT_DIR/cleanup_robot.sh"
+# "$SCRIPT_DIR/cleanup_robot.sh"
 
 # Wait a moment for cleanup to complete
 sleep 1

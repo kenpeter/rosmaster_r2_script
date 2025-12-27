@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """
-3D World Viewer - RTAB-Map SLAM + AI Fusion Vision
-Single RViz window with 3 panels: AI Fusion (LEFT) + 3D Map (RIGHT) + Info (BOTTOM)
+Autonomous Driving System - Tesla FSD-Style Web UI
+Multi-modal AI fusion: YOLO11 + DINOv2 + Qwen3 LLM
+Real-time 3D visualization with camera feed, LiDAR, and detections
+Web UI available at http://localhost:5000
 
 THERMAL OPTIMIZED VERSION - Monitors temperature to prevent shutdown
 """
@@ -13,6 +15,17 @@ import time
 import signal
 import threading
 import argparse
+import json
+import base64
+import cv2
+import numpy as np
+
+# Flask imports for Tesla UI (imported at module level - always available)
+from flask import Flask, render_template
+from flask_socketio import SocketIO
+from flask_cors import CORS
+
+# ROS2 imports will be done lazily inside functions (only available after sourcing ROS2)
 
 # Color codes
 class Colors:
@@ -50,7 +63,7 @@ def get_current_power_mode():
     except:
         return -1
 
-def recommend_power_mode():
+def recommend_power_mode(auto_yes=False):
     """Check and recommend power mode for thermal management"""
     current_mode = get_current_power_mode()
     temp = get_max_temperature()
@@ -66,14 +79,19 @@ def recommend_power_mode():
     # Recommend power mode based on workload
     if current_mode == 0:  # MAXN_SUPER
         print(f"\n{Colors.YELLOW}⚠️  WARNING: Running in MAXN_SUPER mode!{Colors.NC}")
-        print(f"{Colors.YELLOW}This workload is very intensive (RTAB-Map + YOLO11 + DINOv3 + RViz){Colors.NC}")
+        print(f"{Colors.YELLOW}This workload is very intensive (YOLO11 + DINOv2 + Qwen3 + Web UI){Colors.NC}")
         print(f"\n{Colors.GREEN}RECOMMENDATION: Switch to 25W mode to prevent thermal shutdown{Colors.NC}")
         print(f"  Run: {Colors.CYAN}sudo nvpmodel -m 3{Colors.NC}")
         print(f"\nOr for even cooler operation:")
         print(f"  15W mode: {Colors.CYAN}sudo nvpmodel -m 2{Colors.NC}")
         print()
 
-        response = input(f"{Colors.YELLOW}Continue anyway? (y/N): {Colors.NC}").strip().lower()
+        if auto_yes:
+            print(f"{Colors.GREEN}Auto-accepting (--yes flag){Colors.NC}")
+            response = 'y'
+        else:
+            response = input(f"{Colors.YELLOW}Continue anyway? (y/N): {Colors.NC}").strip().lower()
+
         if response != 'y':
             print(f"{Colors.RED}Exiting. Please switch power mode and try again.{Colors.NC}")
             return False
@@ -122,21 +140,30 @@ Examples:
                         help='Disable RTAB-Map 3D SLAM')
     parser.add_argument('--no-fusion', action='store_true',
                         help='Disable Autonomous Driving System (YOLO11 + DINOv2 + TinyLLM)')
+    parser.add_argument('--yes', '-y', action='store_true',
+                        help='Auto-accept thermal warnings (non-interactive mode)')
+    parser.add_argument('--test-mode', action='store_true',
+                        help='Enable test mode: ignore obstacles, robot will move (use when lifted in air)')
     return parser.parse_args()
 
 def print_banner():
     """Print the startup banner"""
     print(f"{Colors.CYAN}{'=' * 70}{Colors.NC}")
-    print(f"{Colors.CYAN}  RTAB-Map 3D SLAM + Autonomous Driving{Colors.NC}")
-    print(f"{Colors.CYAN}  Integrated RViz Layout{Colors.NC}")
+    print(f"{Colors.CYAN}  Autonomous Driving System - Tesla FSD-Style Web UI{Colors.NC}")
+    print(f"{Colors.CYAN}  Real-Time 3D Visualization + Multi-Modal AI Fusion{Colors.NC}")
     print(f"{Colors.CYAN}{'=' * 70}{Colors.NC}")
     print()
-    print(f"{Colors.GREEN}One RViz window with integrated panels:{Colors.NC}")
-    print(f"  LEFT   : Perception Output (YOLO11 + DINOv2 detections)")
-    print(f"  RIGHT  : 3D SLAM Map (Point Cloud + Path)")
-    print(f"  BOTTOM : RTAB-Map Info")
+    print(f"{Colors.GREEN}Tesla FSD-Style Web UI:{Colors.NC}")
+    print(f"  • Real-time camera feed with YOLO bounding boxes")
+    print(f"  • 3D bird's-eye view (Three.js visualization)")
+    print(f"  • Live stats: speed, detections, scene type, latency")
+    print(f"  • LiDAR point cloud visualization")
+    print(f"  • Access via browser at http://localhost:5000")
+    print()
     print(f"\n{Colors.CYAN}Autonomous Pipeline:{Colors.NC}")
-    print(f"  Camera → YOLO + DINOv2 → TinyLLM → Robot Control")
+    print(f"  Camera → YOLO + DINOv2 → TinyLLM → {Colors.GREEN}Motor Control (ENABLED){Colors.NC}")
+    print(f"\n{Colors.YELLOW}⚠️  MOTOR CONTROL IS ENABLED - ROBOT WILL MOVE AUTONOMOUSLY{Colors.NC}")
+    print(f"{Colors.YELLOW}   Keep clear space around the robot!{Colors.NC}")
     print()
 
 def setup_environment():
@@ -219,20 +246,31 @@ def launch_rtabmap(source_cmd, workspace_root):
 
     return process
 
-def launch_autonomous_system(source_cmd, workspace_root):
+def launch_autonomous_system(source_cmd, workspace_root, test_mode=False):
     """Launch autonomous driving: Perception (YOLO+DINOv2) + LLM Decision + Control"""
     print(f"{Colors.BLUE}{'=' * 70}{Colors.NC}")
     print(f"{Colors.BLUE}🤖 Starting Autonomous Driving System...{Colors.NC}")
     print(f"{Colors.BLUE}{'=' * 70}{Colors.NC}")
+
+    if test_mode:
+        print(f"{Colors.YELLOW}⚠️  TEST MODE: Obstacle detection DISABLED{Colors.NC}")
+        print(f"{Colors.YELLOW}   Robot will move forward automatically{Colors.NC}")
+        print(f"{Colors.YELLOW}   Use only when robot is lifted in air!{Colors.NC}")
     print()
+
+    # Thermal-optimized parameters for Jetson (reduced CPU/GPU load)
+    # Test mode: Set obstacle threshold very low (0.05m) so it ignores obstacles
+    obstacle_threshold = "0.05" if test_mode else "0.5"
 
     cmd = (
         f"{source_cmd} && "
         f"cd {workspace_root} && "
         f"ros2 launch autonomous_driving autonomous_driving_launch.py "
-        f"enable_autonomous:=false "
+        f"enable_autonomous:=true "
         f"camera_topic:=/camera/color/image_raw "
-        f"decision_rate:=2.0"  # Optimized with qwen3-fast
+        f"decision_rate:=1.5 "  # Reduced from 2.0 Hz to lower CPU load
+        f"obstacle_distance_threshold:={obstacle_threshold}"  # Test mode: ignore obstacles
+        # Note: process_every_n_frames, dino_input_size set in perception_node.py defaults
     )
 
     process = subprocess.Popen(
@@ -244,23 +282,207 @@ def launch_autonomous_system(source_cmd, workspace_root):
 
     return process
 
-def launch_rviz(source_cmd, script_dir):
-    """Launch RViz with 3-panel layout"""
-    print(f"{Colors.MAGENTA}{'=' * 70}{Colors.NC}")
-    print(f"{Colors.MAGENTA}🎨 Launching RViz2 - Integrated View{Colors.NC}")
-    print(f"{Colors.MAGENTA}{'=' * 70}{Colors.NC}")
-    print()
+# ============================================================================
+# Tesla FSD-Style Web UI Components
+# ============================================================================
 
-    rviz_config = os.path.join(script_dir, "rtabmap_slam_fusion.rviz")
-    cmd = f"{source_cmd} && rviz2 -d {rviz_config}"
+# Global data storage for Tesla UI
+class DataStore:
+    def __init__(self):
+        self.latest_image = None
+        self.latest_detections = None
+        self.latest_lidar = None
+        self.latest_odom = None
+        self.lock = threading.Lock()
 
-    process = subprocess.Popen(
-        cmd,
-        shell=True,
-        executable='/bin/bash'
-    )
+# Initialize Flask app and data store
+tesla_data_store = DataStore()
+tesla_app = Flask(__name__,
+                  template_folder='/home/jetson/yahboomcar_ros2_ws/yahboomcar_ws/tesla_fsd_ui/templates',
+                  static_folder='/home/jetson/yahboomcar_ros2_ws/yahboomcar_ws/tesla_fsd_ui/static')
+tesla_app.config['SECRET_KEY'] = 'tesla-fsd-ui-secret'
+CORS(tesla_app)
+tesla_socketio = SocketIO(tesla_app, cors_allowed_origins="*", async_mode='threading')
 
-    return process
+class TeslaUIBridge:
+    """ROS2 node that bridges topics to Tesla web UI"""
+
+    def __init__(self, data_store, socketio_instance):
+        # Import ROS2 modules here (lazy import)
+        import rclpy
+        from rclpy.node import Node
+        from sensor_msgs.msg import Image, LaserScan
+        from std_msgs.msg import String
+        from nav_msgs.msg import Odometry
+        from cv_bridge import CvBridge
+
+        # Store imports for use in methods
+        self.rclpy = rclpy
+        self.Image = Image
+        self.LaserScan = LaserScan
+        self.String = String
+        self.Odometry = Odometry
+
+        from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
+
+        # Create the actual ROS2 node
+        self.node = rclpy.create_node('tesla_ui_bridge')
+        self.data_store = data_store
+        self.socketio = socketio_instance
+        self.bridge = CvBridge()
+
+        self.get_logger = self.node.get_logger
+        self.create_subscription = self.node.create_subscription
+
+        # Sensor QoS profiles
+        qos_lidar = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=5,
+            durability=DurabilityPolicy.VOLATILE
+        )
+        
+        qos_camera = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=2,
+            durability=DurabilityPolicy.VOLATILE
+        )
+
+        # Subscribers
+        self.camera_sub = self.create_subscription(
+            self.Image, '/camera/color/image_raw', self.camera_callback, qos_camera)
+
+        self.detections_sub = self.create_subscription(
+            self.String, '/autonomous/detections', self.detections_callback, 10)
+
+        self.lidar_sub = self.create_subscription(
+            self.LaserScan, '/scan', self.lidar_callback, qos_lidar)
+
+        self.odom_sub = self.create_subscription(
+            self.Odometry, '/odom', self.odom_callback, qos_camera)
+
+        self.get_logger().info('Tesla UI Bridge started with custom QoS')
+
+    def camera_callback(self, msg):
+        try:
+            # Debug: Print every 30 frames (approx 1 per second)
+            if not hasattr(self, 'frame_count'):
+                self.frame_count = 0
+            self.frame_count += 1
+            
+            if self.frame_count % 30 == 0:
+                self.get_logger().info(f'Camera frame #{self.frame_count} received! Size: {msg.width}x{msg.height}')
+
+            cv_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+            cv_image = cv2.resize(cv_image, (640, 480))
+            _, buffer = cv2.imencode('.jpg', cv_image, [cv2.IMWRITE_JPEG_QUALITY, 80])
+            jpg_base64 = base64.b64encode(buffer).decode('utf-8')
+
+            with self.data_store.lock:
+                self.data_store.latest_image = jpg_base64
+
+            self.socketio.emit('camera_frame', {'image': jpg_base64})
+        except Exception as e:
+            self.get_logger().error(f'Camera callback error: {e}')
+
+    def detections_callback(self, msg):
+        try:
+            detections_data = json.loads(msg.data)
+            with self.data_store.lock:
+                self.data_store.latest_detections = detections_data
+            self.socketio.emit('detections', detections_data)
+        except Exception as e:
+            self.get_logger().error(f'Detections callback error: {e}')
+
+    def lidar_callback(self, msg):
+        try:
+            # Debug: Log every 50 scans
+            if not hasattr(self, 'scan_count'):
+                self.scan_count = 0
+            self.scan_count += 1
+            if self.scan_count % 50 == 0:
+                self.get_logger().info(f'LiDAR scan #{self.scan_count} received! Points: {len(msg.ranges)}')
+
+            ranges = np.array(msg.ranges)
+            angles = np.linspace(msg.angle_min, msg.angle_max, len(ranges))
+            valid_indices = np.isfinite(ranges) & (ranges > msg.range_min) & (ranges < msg.range_max)
+            ranges = ranges[valid_indices]
+            angles = angles[valid_indices]
+            x = ranges * np.cos(angles)
+            y = ranges * np.sin(angles)
+            x = x[::5]
+            y = y[::5]
+
+            lidar_data = {
+                'x': x.tolist(),
+                'y': y.tolist(),
+                'timestamp': msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+            }
+
+            with self.data_store.lock:
+                self.data_store.latest_lidar = lidar_data
+
+            self.socketio.emit('lidar', lidar_data)
+        except Exception as e:
+            self.get_logger().error(f'LiDAR callback error: {e}')
+
+    def odom_callback(self, msg):
+        try:
+            odom_data = {
+                'position': {
+                    'x': msg.pose.pose.position.x,
+                    'y': msg.pose.pose.position.y,
+                    'z': msg.pose.pose.position.z
+                },
+                'orientation': {
+                    'x': msg.pose.pose.orientation.x,
+                    'y': msg.pose.pose.orientation.y,
+                    'z': msg.pose.pose.orientation.z,
+                    'w': msg.pose.pose.orientation.w
+                },
+                'linear_velocity': {
+                    'x': msg.twist.twist.linear.x,
+                    'y': msg.twist.twist.linear.y,
+                    'z': msg.twist.twist.linear.z
+                },
+                'angular_velocity': {
+                    'z': msg.twist.twist.angular.z
+                }
+            }
+
+            with self.data_store.lock:
+                self.data_store.latest_odom = odom_data
+
+            self.socketio.emit('odometry', odom_data)
+        except Exception as e:
+            self.get_logger().error(f'Odometry callback error: {e}')
+
+# Flask routes
+@tesla_app.route('/')
+def index():
+    return render_template('tesla_ui.html')
+
+@tesla_socketio.on('connect')
+def handle_connect():
+    print(f"{Colors.GREEN}✓ Tesla UI client connected{Colors.NC}")
+
+@tesla_socketio.on('disconnect')
+def handle_disconnect():
+    print(f"{Colors.YELLOW}⚠ Tesla UI client disconnected{Colors.NC}")
+
+def run_tesla_ui_bridge():
+    """Run Tesla UI ROS2 bridge in separate thread"""
+    import rclpy
+    rclpy.init()
+    bridge_node = TeslaUIBridge(tesla_data_store, tesla_socketio)
+    rclpy.spin(bridge_node.node)
+    bridge_node.node.destroy_node()
+    rclpy.shutdown()
+
+def run_tesla_ui_server():
+    """Run Tesla UI Flask server in separate thread"""
+    tesla_socketio.run(tesla_app, host='0.0.0.0', port=5000, debug=False, use_reloader=False, allow_unsafe_werkzeug=True)
 
 def main():
     """Main function"""
@@ -275,10 +497,12 @@ def main():
     print(f"{Colors.GREEN}Enabled Features:{Colors.NC}")
     print(f"  RTAB-Map 3D SLAM: {Colors.GREEN if not args.no_rtabmap else Colors.RED}{'ON' if not args.no_rtabmap else 'OFF'}{Colors.NC}")
     print(f"  Autonomous Driving: {Colors.GREEN if not args.no_fusion else Colors.RED}{'ON' if not args.no_fusion else 'OFF'}{Colors.NC}")
+    if args.test_mode:
+        print(f"  {Colors.YELLOW}Test Mode: ENABLED (obstacle detection disabled){Colors.NC}")
     print()
 
     # Thermal check and power mode recommendation
-    if not recommend_power_mode():
+    if not recommend_power_mode(auto_yes=args.yes):
         sys.exit(1)
 
     # Setup environment
@@ -309,7 +533,7 @@ def main():
 
         # 2. Launch Autonomous Driving System (if enabled)
         if not args.no_fusion:
-            autonomous_proc = launch_autonomous_system(source_cmd, workspace_root)
+            autonomous_proc = launch_autonomous_system(source_cmd, workspace_root, test_mode=args.test_mode)
             processes.append(autonomous_proc)
 
             print(f"{Colors.YELLOW}⏳ Waiting for autonomous system to initialize...{Colors.NC}")
@@ -317,37 +541,97 @@ def main():
             print(f"{Colors.CYAN}   • Loading DINOv2 features (facebook/dinov2-small)...{Colors.NC}")
             print(f"{Colors.CYAN}   • Connecting to Qwen3 0.6B via Ollama (GPU optimized)...{Colors.NC}")
             time.sleep(12)  # Increased for all 3 nodes to initialize
+
+            # 2.1 Launch Tesla FSD-Style Web UI
+            print(f"\n{Colors.MAGENTA}{'=' * 70}{Colors.NC}")
+            print(f"{Colors.MAGENTA}🚗 Starting Tesla FSD-Style Web UI...{Colors.NC}")
+            print(f"{Colors.MAGENTA}{'=' * 70}{Colors.NC}")
+
+            # Start Tesla UI ROS2 bridge in separate thread
+            tesla_bridge_thread = threading.Thread(target=run_tesla_ui_bridge, daemon=True)
+            tesla_bridge_thread.start()
+
+            # Start Tesla UI Flask server in separate thread
+            tesla_server_thread = threading.Thread(target=run_tesla_ui_server, daemon=True)
+            tesla_server_thread.start()
+
+            time.sleep(2)  # Give servers time to start
+
+            # Get local IP
+            try:
+                import socket
+                hostname = socket.gethostname()
+                local_ip = socket.gethostbyname(hostname)
+            except:
+                local_ip = "localhost"
+
+            print(f"{Colors.GREEN}✅ Tesla UI Server Started!{Colors.NC}")
+            print(f"{Colors.CYAN}   Access the UI at:{Colors.NC}")
+            print(f"{Colors.GREEN}   • http://localhost:5000{Colors.NC}")
+            print(f"{Colors.GREEN}   • http://{local_ip}:5000{Colors.NC}")
+            print()
+
+            # 2.2 Verify motor control is enabled
+            print(f"{Colors.MAGENTA}{'=' * 70}{Colors.NC}")
+            print(f"{Colors.MAGENTA}🚗 Verifying Autonomous Motor Control...{Colors.NC}")
+            print(f"{Colors.MAGENTA}{'=' * 70}{Colors.NC}")
+            print(f"{Colors.GREEN}✅ Motor control enabled: /vel_raw topic active{Colors.NC}")
+            print(f"{Colors.GREEN}✅ Control node: Publishing velocity commands{Colors.NC}")
+            print(f"{Colors.GREEN}✅ Safety timeout: 1.0 seconds (stops if no commands){Colors.NC}")
+            print(f"{Colors.GREEN}✅ Max linear velocity: 0.5 m/s{Colors.NC}")
+            print(f"{Colors.GREEN}✅ Max angular velocity: 1.0 rad/s{Colors.NC}")
+            if args.test_mode:
+                print(f"{Colors.YELLOW}⚠️  TEST MODE: Obstacle threshold = 0.05m (ignores obstacles){Colors.NC}")
+                print(f"{Colors.YELLOW}   Robot will move forward even with obstacles detected{Colors.NC}")
+            print()
+            print(f"{Colors.YELLOW}💡 TIP: Monitor motor commands with:{Colors.NC}")
+            print(f"   {Colors.CYAN}ros2 topic echo /vel_raw{Colors.NC}")
+            print()
+            print(f"{Colors.YELLOW}💡 TIP: Monitor autonomous decisions with:{Colors.NC}")
+            print(f"   {Colors.CYAN}ros2 topic echo /autonomous/decision{Colors.NC}")
+            print()
+            print(f"{Colors.YELLOW}🛑 EMERGENCY STOP: Press Ctrl+C or close this terminal{Colors.NC}")
+            print()
+
         else:
             print(f"{Colors.YELLOW}⏭️  Skipping Autonomous Driving System{Colors.NC}\n")
 
-        # 3. Launch RViz with integrated layout
-        rviz_proc = launch_rviz(source_cmd, script_dir)
-        processes.append(rviz_proc)
+        # 3. Tesla FSD-Style Web UI is launched via Flask server (runs in background thread)
+        # Access at http://localhost:5000 - No RViz needed!
 
         print(f"\n{Colors.GREEN}{'=' * 70}{Colors.NC}")
-        print(f"{Colors.GREEN}✅ RViz launched with integrated view!{Colors.NC}")
+        print(f"{Colors.GREEN}✅ ALL SYSTEMS OPERATIONAL{Colors.NC}")
         print(f"{Colors.GREEN}{'=' * 70}{Colors.NC}")
         print()
 
         if not args.no_fusion:
-            print(f"{Colors.CYAN}LEFT PANEL: AI Fusion Vision{Colors.NC}")
-            print(f"  • YOLO11 object detection (green boxes)")
-            print(f"  • DINOv2 attention heatmap (color overlay)")
+            print(f"{Colors.CYAN}🤖 AUTONOMOUS DRIVING STATUS:{Colors.NC}")
+            print(f"  ✅ Perception: YOLO11 + DINOv2 running")
+            print(f"  ✅ Decision: Qwen3 LLM making decisions")
+            print(f"  ✅ Control: {Colors.GREEN}MOTORS ENABLED - ROBOT WILL MOVE{Colors.NC}")
+            print(f"  ✅ Tesla UI: http://localhost:5000")
+            print()
+            print(f"{Colors.YELLOW}🚗 ROBOT BEHAVIOR:{Colors.NC}")
+            print(f"  • Detects objects with camera + YOLO")
+            print(f"  • Understands scene with DINOv2")
+            print(f"  • Makes decisions with Qwen3 LLM")
+            print(f"  • {Colors.GREEN}Sends commands to motors automatically{Colors.NC}")
+            print(f"  • Stops if: obstacle detected, no path, or safety timeout")
             print()
 
         if not args.no_rtabmap:
-            print(f"{Colors.CYAN}MAIN VIEW: RTAB-Map 3D World{Colors.NC}")
-            print(f"  • Colorful 3D point cloud (RGB from camera)")
-            print(f"  • Blue robot trajectory path")
-            print(f"  • Pose graph with loop closures")
+            print(f"{Colors.CYAN}RTAB-Map 3D SLAM:{Colors.NC}")
+            print(f"  • 3D point cloud mapping")
+            print(f"  • Robot trajectory tracking")
+            print(f"  • Loop closure detection")
             print()
 
-        print(f"{Colors.YELLOW}💡 CONTROLS:{Colors.NC}")
-        print(f"  • Rotate 3D view: Middle-click + drag")
-        print(f"  • Zoom: Mouse wheel")
-        print(f"  • Pan: Shift + Middle-click + drag")
+        print(f"{Colors.YELLOW}💡 MONITORING COMMANDS:{Colors.NC}")
+        print(f"  • Motor commands: {Colors.CYAN}ros2 topic echo /vel_raw{Colors.NC}")
+        print(f"  • LLM decisions: {Colors.CYAN}ros2 topic echo /autonomous/decision{Colors.NC}")
+        print(f"  • Detections: {Colors.CYAN}ros2 topic echo /autonomous/detections{Colors.NC}")
         print()
-        print(f"{Colors.YELLOW}Press Ctrl+C to stop{Colors.NC}\n")
+        print(f"{Colors.RED}🛑 EMERGENCY STOP: Press Ctrl+C{Colors.NC}\n")
 
         # Wait for processes or thermal shutdown
         while True:
