@@ -293,6 +293,7 @@ class DataStore:
         self.latest_detections = None
         self.latest_lidar = None
         self.latest_odom = None
+        self.latest_lanes = None  # NEW: for lane detection
         self.lock = threading.Lock()
 
 # Initialize Flask app and data store
@@ -361,6 +362,9 @@ class TeslaUIBridge:
 
         self.odom_sub = self.create_subscription(
             self.Odometry, '/odom', self.odom_callback, qos_camera)
+
+        self.lane_sub = self.create_subscription(
+            self.String, '/autonomous/lane_detections', self.lane_callback, 10)
 
         self.get_logger().info('Tesla UI Bridge started with custom QoS')
 
@@ -458,6 +462,15 @@ class TeslaUIBridge:
         except Exception as e:
             self.get_logger().error(f'Odometry callback error: {e}')
 
+    def lane_callback(self, msg):
+        try:
+            lane_data = json.loads(msg.data)
+            with self.data_store.lock:
+                self.data_store.latest_lanes = lane_data
+            self.socketio.emit('lane_detections', lane_data)
+        except Exception as e:
+            self.get_logger().error(f'Lane callback error: {e}')
+
 # Flask routes
 @tesla_app.route('/')
 def index():
@@ -473,6 +486,30 @@ def handle_disconnect():
 
 def run_tesla_ui_bridge():
     """Run Tesla UI ROS2 bridge in separate thread"""
+    # Set ROS2 environment for this thread
+    ros2_lib_paths = [
+        '/opt/ros/humble/lib',
+        '/opt/ros/humble/lib/aarch64-linux-gnu',
+        '/home/jetson/yahboomcar_ros2_ws/software/library_ws/install/lib',
+        '/home/jetson/yahboomcar_ros2_ws/yahboomcar_ws/install/lib'
+    ]
+
+    # Update LD_LIBRARY_PATH
+    current_ld_path = os.environ.get('LD_LIBRARY_PATH', '')
+    new_ld_paths = ':'.join(ros2_lib_paths)
+    os.environ['LD_LIBRARY_PATH'] = f"{new_ld_paths}:{current_ld_path}" if current_ld_path else new_ld_paths
+
+    # Add ROS2 to Python path
+    ros2_python_paths = [
+        '/opt/ros/humble/lib/python3.10/site-packages',
+        '/opt/ros/humble/local/lib/python3.10/dist-packages',
+        '/home/jetson/yahboomcar_ros2_ws/software/library_ws/install/lib/python3.10/site-packages',
+        '/home/jetson/yahboomcar_ros2_ws/yahboomcar_ws/install/lib/python3.10/site-packages'
+    ]
+    for path in ros2_python_paths:
+        if path not in sys.path and os.path.exists(path):
+            sys.path.insert(0, path)
+
     import rclpy
     rclpy.init()
     bridge_node = TeslaUIBridge(tesla_data_store, tesla_socketio)
@@ -547,15 +584,20 @@ def main():
             print(f"{Colors.MAGENTA}🚗 Starting Tesla FSD-Style Web UI...{Colors.NC}")
             print(f"{Colors.MAGENTA}{'=' * 70}{Colors.NC}")
 
-            # Start Tesla UI ROS2 bridge in separate thread
-            tesla_bridge_thread = threading.Thread(target=run_tesla_ui_bridge, daemon=True)
-            tesla_bridge_thread.start()
+            # Launch Tesla UI server as subprocess (not thread - ROS2 needs proper environment)
+            tesla_ui_cmd = f"{source_cmd} && cd {workspace_root} && python3 tesla_fsd_ui/tesla_ui_server.py"
+            tesla_ui_proc = subprocess.Popen(
+                tesla_ui_cmd,
+                shell=True,
+                executable='/bin/bash',
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                bufsize=1,
+                universal_newlines=True
+            )
+            processes.append(tesla_ui_proc)
 
-            # Start Tesla UI Flask server in separate thread
-            tesla_server_thread = threading.Thread(target=run_tesla_ui_server, daemon=True)
-            tesla_server_thread.start()
-
-            time.sleep(2)  # Give servers time to start
+            time.sleep(3)  # Give server time to start
 
             # Get local IP
             try:
