@@ -22,6 +22,26 @@ def print_header():
     print(f"{BLUE}========================================={NC}")
     print("")
 
+def send_stop_command():
+    """Send stop command to motors BEFORE killing processes"""
+    print(f"{YELLOW}🛑 Sending STOP command to motors...{NC}")
+
+    try:
+        # Send stop command - give it enough time to complete
+        subprocess.run(
+            """bash -c 'source /opt/ros/humble/setup.bash && source /home/jetson/yahboomcar_ros2_ws/yahboomcar_ws/install/setup.bash && export ROS_DOMAIN_ID=28 && ros2 topic pub --once /cmd_vel geometry_msgs/Twist "{linear: {x: 0.0, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}"'""",
+            shell=True,
+            capture_output=True,
+            timeout=5
+        )
+        print(f"{GREEN}✅ Stop command sent{NC}")
+    except subprocess.TimeoutExpired:
+        print(f"{YELLOW}⚠️  Stop command timed out (robot may already be stopped){NC}")
+    except Exception as e:
+        print(f"{YELLOW}⚠️  Could not send stop command: {e}{NC}")
+
+    time.sleep(0.5)  # Give motors time to stop
+
 def kill_process(process_name, display_name):
     """Kill a process by name, with force kill if needed"""
     # Check if process exists
@@ -136,6 +156,10 @@ def verify_stopped():
 
 def main():
     print_header()
+
+    # IMPORTANT: Send stop command BEFORE killing processes
+    # This ensures motors stop rotating
+    send_stop_command()
 
     stop_processes()
 
