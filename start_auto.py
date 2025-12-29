@@ -245,6 +245,25 @@ def check_robot_running(source_cmd):
 
     return False
 
+def launch_lidar(source_cmd, workspace_root):
+    """Launch YDLidar Driver"""
+    print(f"{Colors.GREEN}{'=' * 70}{Colors.NC}")
+    print(f"{Colors.GREEN}🚀 Starting YDLidar Driver (my_ydlidar_ros2_driver)...{Colors.NC}")
+    print(f"{Colors.GREEN}{'=' * 70}{Colors.NC}")
+
+    cmd = f"{source_cmd} && ros2 run my_ydlidar_ros2_driver my_ydlidar_ros2_driver_node"
+
+    process = subprocess.Popen(
+        cmd,
+        shell=True,
+        executable='/bin/bash',
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True
+    )
+
+    return process
+
 def launch_rtabmap(source_cmd, workspace_root):
     """Launch RTAB-Map SLAM in headless mode (no visualizer)"""
     print(f"{Colors.GREEN}{'=' * 70}{Colors.NC}")
@@ -581,6 +600,28 @@ def main():
     print(f"{Colors.GREEN}✓ Temperature monitoring active{Colors.NC}\n")
 
     try:
+        # 0. Launch LIDAR (if not already running)
+        lidar_needed = True
+        try:
+            check_res = subprocess.run(
+                f"{source_cmd} && timeout 2 ros2 topic list",
+                shell=True,
+                executable='/bin/bash',
+                capture_output=True,
+                text=True
+            )
+            if "/scan" in check_res.stdout:
+                print(f"{Colors.GREEN}✓ LIDAR already running (/scan detected){Colors.NC}\n")
+                lidar_needed = False
+        except:
+            pass
+
+        if lidar_needed:
+            lidar_proc = launch_lidar(source_cmd, workspace_root)
+            processes.append(lidar_proc)
+            print(f"{Colors.YELLOW}⏳ Waiting for LIDAR to initialize (3s)...{Colors.NC}")
+            time.sleep(3)
+
         # 1. Launch RTAB-Map SLAM (if enabled)
         if not args.no_rtabmap:
             rtabmap_proc = launch_rtabmap(source_cmd, workspace_root)
