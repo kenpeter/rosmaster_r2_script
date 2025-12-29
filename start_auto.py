@@ -190,40 +190,60 @@ def check_robot_running(source_cmd):
     print(f"{Colors.YELLOW}Checking robot status...{Colors.NC}")
 
     try:
+        # Try ros2 topic list first (preferred method)
         result = subprocess.run(
-            f"{source_cmd} && ros2 topic list",
+            f"{source_cmd} && timeout 3 ros2 topic list",
             shell=True,
             executable='/bin/bash',
             capture_output=True,
-            text=True
+            text=True,
+            timeout=5
         )
 
-        if "/odom" not in result.stdout:
-            print(f"{Colors.RED}ERROR: Robot not running!{Colors.NC}")
-            print(f"Please start the robot first:")
-            print(f"  {Colors.YELLOW}./scripts/start_robot.sh{Colors.NC}")
-            return False
+        if "/odom" in result.stdout:
+            # ROS2 discovery working - check sensors
+            lidar_ok = "/scan" in result.stdout
+            camera_ok = "/camera/depth/image_raw" in result.stdout or "/camera/color/image_raw" in result.stdout
 
-        # Check sensors
-        lidar_ok = "/scan" in result.stdout
-        camera_ok = "/camera/depth/image_raw" in result.stdout
+            if lidar_ok:
+                print(f"{Colors.GREEN}✓ YDLidar TG30 detected{Colors.NC}")
+            else:
+                print(f"{Colors.RED}✗ YDLidar not found{Colors.NC}")
 
-        if lidar_ok:
-            print(f"{Colors.GREEN}✓ YDLidar TG30 detected{Colors.NC}")
-        else:
-            print(f"{Colors.RED}✗ YDLidar not found{Colors.NC}")
+            if camera_ok:
+                print(f"{Colors.GREEN}✓ Astra Camera detected{Colors.NC}")
+            else:
+                print(f"{Colors.RED}✗ Camera not found{Colors.NC}")
 
-        if camera_ok:
-            print(f"{Colors.GREEN}✓ Astra Camera detected{Colors.NC}")
-        else:
-            print(f"{Colors.RED}✗ Camera not found{Colors.NC}")
+            print()
+            return True
 
-        print()
-        return True
+    except:
+        pass  # Fall through to process check
 
-    except Exception as e:
-        print(f"{Colors.RED}Error checking robot status: {e}{Colors.NC}")
-        return False
+    # Fallback: Check for critical robot processes (when ROS2 discovery fails)
+    print(f"{Colors.YELLOW}⚠️  ROS2 discovery slow, using process detection...{Colors.NC}")
+    try:
+        proc_result = subprocess.run(
+            "ps aux | grep -E 'Ackman_driver_R2|base_node_R2|ekf_node' | grep -v grep",
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=3
+        )
+
+        lines = [l for l in proc_result.stdout.strip().split('\n') if l]
+        if len(lines) >= 3:
+            print(f"{Colors.GREEN}✓ Robot controller detected (Ackman_driver_R2){Colors.NC}")
+            print(f"{Colors.GREEN}✓ Base node detected (base_node_R2){Colors.NC}")
+            print(f"{Colors.GREEN}✓ EKF localization detected{Colors.NC}")
+            print()
+            return True
+
+    except:
+        pass
+
+    return False
 
 def launch_rtabmap(source_cmd, workspace_root):
     """Launch RTAB-Map SLAM in headless mode (no visualizer)"""
@@ -547,6 +567,9 @@ def main():
 
     # Check robot status
     if not check_robot_running(source_cmd):
+        print(f"{Colors.RED}ERROR: Robot not running!{Colors.NC}")
+        print(f"Please start the robot first:")
+        print(f"  {Colors.YELLOW}./scripts/start_robot.sh{Colors.NC}")
         sys.exit(1)
 
     processes = []
