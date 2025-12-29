@@ -640,7 +640,8 @@ def main():
             print(f"{Colors.YELLOW}⏳ Waiting for autonomous system to initialize...{Colors.NC}")
             print(f"{Colors.CYAN}   • Loading YOLO11 model (yolo11s.pt)...{Colors.NC}")
             print(f"{Colors.CYAN}   • Loading DINOv2 features (facebook/dinov2-small)...{Colors.NC}")
-            print(f"{Colors.CYAN}   • Connecting to Qwen3 0.6B via Ollama (GPU optimized)...{Colors.NC}")
+            print(f"{Colors.CYAN}   • Connecting to TinyLlama 1.1B via Ollama (GPU optimized)...{Colors.NC}")
+            print(f"{Colors.CYAN}     (Use model:=qwen3:0.6b to switch to Qwen3){Colors.NC}")
             time.sleep(12)  # Increased for all 3 nodes to initialize
 
             # 2.1 Launch Tesla FSD-Style Web UI
