@@ -22,25 +22,51 @@ def print_header():
     print(f"{BLUE}========================================={NC}")
     print("")
 
+def check_driver_running():
+    """Check if motor driver is running"""
+    result = subprocess.run(
+        ["pgrep", "-f", "driver_node|Ackman_driver|Mcnamu_driver"],
+        capture_output=True
+    )
+    return result.returncode == 0
+
 def send_stop_command():
     """Send stop command to motors BEFORE killing processes"""
     print(f"{YELLOW}🛑 Sending STOP command to motors...{NC}")
 
+    # Check if driver is running
+    if not check_driver_running():
+        print(f"{YELLOW}⚠️  No driver running - motors should already be stopped{NC}")
+        return
+
     try:
-        # Send stop command - give it enough time to complete
-        subprocess.run(
-            """bash -c 'source /opt/ros/humble/setup.bash && source /home/jetson/yahboomcar_ros2_ws/yahboomcar_ws/install/setup.bash && export ROS_DOMAIN_ID=28 && ros2 topic pub --once /cmd_vel geometry_msgs/Twist "{linear: {x: 0.0, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}"'""",
+        # Use continuous publishing (not --once) for 2 seconds
+        # This ensures ROS discovery happens and messages are delivered
+        print(f"{YELLOW}Publishing stop commands for 2 seconds...{NC}")
+
+        proc = subprocess.Popen(
+            """bash -c 'source /opt/ros/humble/setup.bash && source /home/jetson/yahboomcar_ros2_ws/yahboomcar_ws/install/setup.bash && export ROS_DOMAIN_ID=28 && ros2 topic pub --rate 10 /cmd_vel geometry_msgs/Twist "{linear: {x: 0.0, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}"'""",
             shell=True,
-            capture_output=True,
-            timeout=5
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
         )
-        print(f"{GREEN}✅ Stop command sent{NC}")
-    except subprocess.TimeoutExpired:
-        print(f"{YELLOW}⚠️  Stop command timed out (robot may already be stopped){NC}")
+
+        # Let it publish for 2 seconds
+        time.sleep(2.0)
+
+        # Kill the publisher
+        proc.terminate()
+        try:
+            proc.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+
+        print(f"{GREEN}✅ Stop commands sent (20 messages @ 10Hz){NC}")
+        time.sleep(0.5)  # Give motors time to stop
+
     except Exception as e:
         print(f"{YELLOW}⚠️  Could not send stop command: {e}{NC}")
-
-    time.sleep(0.5)  # Give motors time to stop
 
 def kill_process(process_name, display_name):
     """Kill a process by name, with force kill if needed"""

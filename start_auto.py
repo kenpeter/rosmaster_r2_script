@@ -765,6 +765,29 @@ def main():
         # Stop temperature monitoring
         stop_event.set()
 
+        # CRITICAL: Send stop command to motors BEFORE killing processes
+        print(f"\n{Colors.YELLOW}🛑 Stopping motors...{Colors.NC}")
+        try:
+            # Use continuous publishing for 2 seconds to ensure delivery
+            proc = subprocess.Popen(
+                """bash -c 'source /opt/ros/humble/setup.bash && source /home/jetson/yahboomcar_ros2_ws/yahboomcar_ws/install/setup.bash && export ROS_DOMAIN_ID=28 && ros2 topic pub --rate 10 /cmd_vel geometry_msgs/Twist "{linear: {x: 0.0, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}"'""",
+                shell=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+            time.sleep(2.0)
+            proc.terminate()
+            try:
+                proc.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+            print(f"{Colors.GREEN}✅ Motors stopped{Colors.NC}")
+        except:
+            print(f"{Colors.YELLOW}⚠️  Could not send motor stop command{Colors.NC}")
+
+        time.sleep(0.5)  # Give motors time to stop
+
         # Cleanup all processes
         for proc in processes:
             try:
