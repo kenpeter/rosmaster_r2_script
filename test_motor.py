@@ -20,6 +20,21 @@ def main():
     car = Rosmaster()
     car.set_car_type(5)  # R2 = 5
 
+    # Start the serial receive thread (required for data updates)
+    car.create_receive_threading()
+
+    # Enable auto-report to get real-time data (including battery voltage)
+    car.set_auto_report_state(True, forever=False)
+    time.sleep(1.0)  # Wait for data to arrive
+
+    # Check battery voltage
+    voltage = car.get_battery_voltage()
+    print(f"🔋 Battery Voltage: {voltage} V")
+    if voltage < 9.0:
+        print("⚠️  WARNING: Voltage is too low! Motors may not move.")
+        print("   Check power switch or charge battery.")
+
+
     try:
         # Test 1: Stop (safety)
         print("\n[TEST 1] Stopping motors (safety)...")
@@ -72,6 +87,9 @@ def main():
         import traceback
         traceback.print_exc()
         sys.exit(1)
+    finally:
+        # Disable auto-report and cleanup
+        car.set_auto_report_state(False, forever=False)
 
 if __name__ == "__main__":
     main()

@@ -20,6 +20,17 @@ def main():
     car = Rosmaster()
     car.set_car_type(5)  # R2 = 5 (Ackermann type)
 
+    # Start the serial receive thread (required for data updates)
+    car.create_receive_threading()
+
+    # Enable auto-report to get real-time data
+    car.set_auto_report_state(True, forever=False)
+    time.sleep(1.0)  # Wait for data to arrive
+
+    # Check battery voltage
+    voltage = car.get_battery_voltage()
+    print(f"🔋 Battery Voltage: {voltage} V")
+
     try:
         # Test 1: Get current default angle
         print("\n[TEST 1] Reading current default steering angle...")
@@ -97,6 +108,9 @@ def main():
         import traceback
         traceback.print_exc()
         sys.exit(1)
+    finally:
+        # Disable auto-report and cleanup
+        car.set_auto_report_state(False, forever=False)
 
 if __name__ == "__main__":
     main()
