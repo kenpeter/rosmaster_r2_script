@@ -38,6 +38,7 @@ def run_bash_command(command, env=None):
     source /opt/ros/humble/setup.bash
     source /home/jetson/yahboomcar_ros2_ws/software/library_ws/install/setup.bash
     source /home/jetson/yahboomcar_ros2_ws/yahboomcar_ws/install/setup.bash
+    export ROS_DOMAIN_ID=28
     {command}
     """
 
@@ -56,6 +57,7 @@ def run_bash_command_async(command, env=None):
     source /opt/ros/humble/setup.bash
     source /home/jetson/yahboomcar_ros2_ws/software/library_ws/install/setup.bash
     source /home/jetson/yahboomcar_ros2_ws/yahboomcar_ws/install/setup.bash
+    export ROS_DOMAIN_ID=28
     {command}
     """
 
@@ -87,9 +89,24 @@ def check_usb_camera():
         return False
     return True
 
+def check_camera_already_running():
+    """Check if astra_camera_node is already running"""
+    result = subprocess.run(
+        ["pgrep", "-f", "astra_camera_node"],
+        capture_output=True
+    )
+    return result.returncode == 0
+
 def launch_camera_node():
     """Launch the Astra camera ROS2 node"""
     print("\n[2/5] Launching Astra camera node...")
+
+    # Check if camera is already running
+    if check_camera_already_running():
+        print("   ⚠️  Camera node already running (skipping launch)")
+        print("   Using existing camera on ROS_DOMAIN_ID=28")
+        time.sleep(2)  # Give existing node time to stabilize
+        return None
 
     # Launch camera using ros2 launch
     print("   Starting astra_camera driver...")
@@ -104,8 +121,8 @@ def launch_camera_node():
     return proc
 
 def wait_for_camera_topics():
-    """Wait for camera topics to become available"""
-    print("\n[3/5] Waiting for camera topics...")
+    """Wait for camera topics to become available (with domain awareness)"""
+    print(f"\n[3/5] Waiting for camera topics (domain 28)...")
 
     max_attempts = 20
     for attempt in range(max_attempts):
@@ -128,7 +145,15 @@ def wait_for_camera_topics():
         print(f"   Attempt {attempt+1}/{max_attempts}...", end='\r')
         time.sleep(0.5)
 
-    print("\n   ⚠️  Timeout waiting for camera topics")
+    # Enhanced error message
+    print(f"\n   ❌ ERROR: Camera topics not found after {max_attempts} attempts")
+    print(f"   Available topics on domain 28:")
+    for topic in topics[:10]:  # Show first 10 topics
+        print(f"      - {topic}")
+    print("\n   Troubleshooting:")
+    print("      1. Check USB camera connection: lsusb | grep Orbbec")
+    print("      2. Check camera process: pgrep -f astra_camera_node")
+    print("      3. Check ROS_DOMAIN_ID: echo $ROS_DOMAIN_ID (should be 28)")
     return False
 
 def display_camera_feed(duration=10):
@@ -177,8 +202,8 @@ def verify_camera():
     """Verify camera is working by checking topic data"""
     print("\n[5/5] Verifying camera data...")
 
-    # Check color image
-    result = run_bash_command("timeout 2 ros2 topic hz /camera/color/image_raw")
+    # Check color image (increase timeout from 2 to 5 seconds)
+    result = run_bash_command("timeout 5 ros2 topic hz /camera/color/image_raw")
     if "average rate" in result.stdout:
         # Extract the rate
         for line in result.stdout.split('\n'):
@@ -188,8 +213,8 @@ def verify_camera():
     else:
         print("   ⚠️  Could not measure color image rate")
 
-    # Check depth image
-    result = run_bash_command("timeout 2 ros2 topic hz /camera/depth/image_raw")
+    # Check depth image (increase timeout from 2 to 5 seconds)
+    result = run_bash_command("timeout 5 ros2 topic hz /camera/depth/image_raw")
     if "average rate" in result.stdout:
         for line in result.stdout.split('\n'):
             if 'average rate' in line:

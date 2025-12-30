@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Autonomous Driving System - Tesla FSD-Style Web UI
-Multi-modal AI fusion: YOLO11 + DINOv2 + Qwen3 LLM
+YOLO11 object detection + Qwen3 LLM decision making
 Real-time 3D visualization with camera feed, LiDAR, and detections
 Web UI available at http://localhost:5000
 
@@ -79,7 +79,7 @@ def recommend_power_mode(auto_yes=False):
     # Recommend power mode based on workload
     if current_mode == 0:  # MAXN_SUPER
         print(f"\n{Colors.YELLOW}⚠️  WARNING: Running in MAXN_SUPER mode!{Colors.NC}")
-        print(f"{Colors.YELLOW}This workload is very intensive (YOLO11 + DINOv2 + Qwen3 + Web UI){Colors.NC}")
+        print(f"{Colors.YELLOW}This workload is intensive (YOLO11 + Qwen3 + Web UI){Colors.NC}")
         print(f"\n{Colors.GREEN}RECOMMENDATION: Switch to 25W mode to prevent thermal shutdown{Colors.NC}")
         print(f"  Run: {Colors.CYAN}sudo nvpmodel -m 3{Colors.NC}")
         print(f"\nOr for even cooler operation:")
@@ -126,20 +126,23 @@ def monitor_temperature(stop_event):
 def parse_arguments():
     """Parse command line arguments"""
     parser = argparse.ArgumentParser(
-        description='RTAB-Map 3D SLAM + AI Fusion Vision Viewer',
+        description='Yahboom R2 - Unified Startup System (Robot Hardware + Autonomous Driving)',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''
 Examples:
-  ./show_3d_world.py                          # All features ON (default)
-  ./show_3d_world.py --no-rtabmap             # Fusion vision only
-  ./show_3d_world.py --no-fusion              # RTAB-Map only
-  ./show_3d_world.py --no-rtabmap --no-fusion # Minimal (no heavy processing)
+  ./start_auto.py                          # Full system (robot + autonomous + RTAB-Map)
+  ./start_auto.py --robot-only             # Robot hardware only (replaces start_robot.sh)
+  ./start_auto.py --no-rtabmap             # Robot + autonomous (no SLAM)
+  ./start_auto.py --no-fusion              # Robot + RTAB-Map only (no autonomous)
+  ./start_auto.py --test-mode              # Test mode: ignores obstacles
         '''
     )
+    parser.add_argument('--robot-only', action='store_true',
+                        help='Only launch robot hardware, skip autonomous system')
     parser.add_argument('--no-rtabmap', action='store_true',
                         help='Disable RTAB-Map 3D SLAM')
     parser.add_argument('--no-fusion', action='store_true',
-                        help='Disable Autonomous Driving System (YOLO11 + DINOv2 + TinyLLM)')
+                        help='Disable Autonomous Driving System (YOLO11 + LLM)')
     parser.add_argument('--yes', '-y', action='store_true',
                         help='Auto-accept thermal warnings (non-interactive mode)')
     parser.add_argument('--test-mode', action='store_true',
@@ -148,21 +151,24 @@ Examples:
 
 def print_banner():
     """Print the startup banner"""
-    print(f"{Colors.CYAN}{'=' * 70}{Colors.NC}")
-    print(f"{Colors.CYAN}  Autonomous Driving System - Tesla FSD-Style Web UI{Colors.NC}")
-    print(f"{Colors.CYAN}  Real-Time 3D Visualization + Multi-Modal AI Fusion{Colors.NC}")
-    print(f"{Colors.CYAN}{'=' * 70}{Colors.NC}")
+    print(f"{Colors.BLUE}{'=' * 70}{Colors.NC}")
+    print(f"{Colors.BLUE}  Yahboom R2 - Unified Startup System{Colors.NC}")
+    print(f"{Colors.BLUE}{'=' * 70}{Colors.NC}")
     print()
-    print(f"{Colors.GREEN}Tesla FSD-Style Web UI:{Colors.NC}")
-    print(f"  • Real-time camera feed with YOLO bounding boxes")
-    print(f"  • 3D bird's-eye view (Three.js visualization)")
-    print(f"  • Live stats: speed, detections, scene type, latency")
-    print(f"  • LiDAR point cloud visualization")
-    print(f"  • Access via browser at http://localhost:5000")
+    print(f"{Colors.CYAN}PHASE 1: Robot Hardware{Colors.NC}")
+    print("  • Ackermann motor driver")
+    print("  • Odometry & localization (EKF)")
+    print("  • YDLidar (360° laser scan)")
+    print("  • Astra camera (RGB + Depth)")
+    print("  • IMU sensor fusion")
     print()
-    print(f"\n{Colors.CYAN}Autonomous Pipeline:{Colors.NC}")
-    print(f"  Camera → YOLO + DINOv2 → TinyLLM → {Colors.GREEN}Motor Control (ENABLED){Colors.NC}")
-    print(f"\n{Colors.YELLOW}⚠️  MOTOR CONTROL IS ENABLED - ROBOT WILL MOVE AUTONOMOUSLY{Colors.NC}")
+    print(f"{Colors.CYAN}PHASE 2: Autonomous System (Optional){Colors.NC}")
+    print("  • RTAB-Map 3D SLAM")
+    print("  • YOLO11 object detection")
+    print("  • Qwen3 LLM decision making")
+    print("  • Tesla FSD-style Web UI (http://localhost:5000)")
+    print()
+    print(f"{Colors.YELLOW}⚠️  MOTOR CONTROL WILL BE ENABLED - ROBOT WILL MOVE AUTONOMOUSLY{Colors.NC}")
     print(f"{Colors.YELLOW}   Keep clear space around the robot!{Colors.NC}")
     print()
 
@@ -245,6 +251,104 @@ def check_robot_running(source_cmd):
 
     return False
 
+def check_hardware_devices():
+    """Check if hardware devices are connected"""
+    devices_ok = True
+
+    print(f"{Colors.YELLOW}Checking hardware devices...{Colors.NC}")
+
+    # Check robot controller
+    if not os.path.exists('/dev/myserial'):
+        print(f"{Colors.YELLOW}  ⚠️  /dev/myserial not found{Colors.NC}")
+        devices_ok = False
+    else:
+        print(f"{Colors.GREEN}  ✓ Robot controller (/dev/myserial){Colors.NC}")
+
+    # Check LiDAR
+    if not os.path.exists('/dev/ydlidar'):
+        print(f"{Colors.YELLOW}  ⚠️  /dev/ydlidar not found{Colors.NC}")
+        devices_ok = False
+    else:
+        print(f"{Colors.GREEN}  ✓ YDLidar (/dev/ydlidar){Colors.NC}")
+
+    # Check camera
+    result = subprocess.run(['lsusb'], capture_output=True, text=True)
+    if '2bc5:050f' not in result.stdout:  # Orbbec Astra
+        print(f"{Colors.YELLOW}  ⚠️  Astra camera not found via USB{Colors.NC}")
+        devices_ok = False
+    else:
+        print(f"{Colors.GREEN}  ✓ Astra camera (USB){Colors.NC}")
+
+    print()
+    return devices_ok
+
+def launch_robot_hardware(source_cmd, workspace_root):
+    """Launch robot hardware (motors, sensors, odometry)"""
+    print(f"\n{Colors.MAGENTA}{'=' * 70}{Colors.NC}")
+    print(f"{Colors.MAGENTA}🤖 PHASE 1: Launching Robot Hardware{Colors.NC}")
+    print(f"{Colors.MAGENTA}{'=' * 70}{Colors.NC}")
+
+    print(f"{Colors.CYAN}Components:{Colors.NC}")
+    print(f"  • Motor driver (Ackermann R2)")
+    print(f"  • Odometry (base_node_R2 → /odom)")
+    print(f"  • YDLidar (→ /scan)")
+    print(f"  • Astra camera (→ /camera/color/image_raw, /camera/depth/image_raw)")
+    print(f"  • IMU filter")
+    print(f"  • EKF localization")
+    print()
+
+    cmd = f"{source_cmd} && cd {workspace_root} && ros2 launch yahboomcar_bringup yahboomcar_bringup_R2_full_launch.py"
+
+    proc = subprocess.Popen(
+        cmd,
+        shell=True,
+        executable='/bin/bash'
+    )
+
+    print(f"{Colors.GREEN}✓ Robot hardware launched (PID: {proc.pid}){Colors.NC}")
+    return proc
+
+def wait_for_robot_topics(source_cmd, timeout=30):
+    """Wait for critical robot topics to appear"""
+    print(f"\n{Colors.YELLOW}⏳ Waiting for robot topics...{Colors.NC}")
+
+    required_topics = ['/odom', '/scan', '/camera/color/image_raw']
+    start_time = time.time()
+
+    while time.time() - start_time < timeout:
+        result = subprocess.run(
+            f"{source_cmd} && ros2 topic list",
+            shell=True,
+            executable='/bin/bash',
+            capture_output=True,
+            text=True
+        )
+
+        topics = result.stdout.strip().split('\n')
+        found = [t for t in required_topics if t in topics]
+
+        if len(found) == len(required_topics):
+            print(f"{Colors.GREEN}✓ All robot topics ready!{Colors.NC}")
+            for topic in required_topics:
+                print(f"  ✓ {topic}")
+            print()
+            return True
+
+        print(f"   Found {len(found)}/{len(required_topics)} topics... ({int(time.time() - start_time)}s)", end='\r')
+        time.sleep(0.5)
+
+    # Timeout
+    print(f"\n{Colors.RED}❌ ERROR: Robot topics not available after {timeout}s{Colors.NC}")
+    print(f"{Colors.YELLOW}Found topics:{Colors.NC}")
+    for topic in found:
+        print(f"  ✓ {topic}")
+    print(f"{Colors.RED}Missing topics:{Colors.NC}")
+    for topic in required_topics:
+        if topic not in found:
+            print(f"  ✗ {topic}")
+    print()
+    return False
+
 def launch_lidar(source_cmd, workspace_root):
     """Launch YDLidar Driver"""
     print(f"{Colors.GREEN}{'=' * 70}{Colors.NC}")
@@ -286,7 +390,7 @@ def launch_rtabmap(source_cmd, workspace_root):
     return process
 
 def launch_autonomous_system(source_cmd, workspace_root, test_mode=False):
-    """Launch autonomous driving: Perception (YOLO+DINOv2) + LLM Decision + Control"""
+    """Launch autonomous driving: Perception (YOLO) + LLM Decision + Control"""
     print(f"{Colors.BLUE}{'=' * 70}{Colors.NC}")
     print(f"{Colors.BLUE}🤖 Starting Autonomous Driving System...{Colors.NC}")
     print(f"{Colors.BLUE}{'=' * 70}{Colors.NC}")
@@ -584,14 +688,40 @@ def main():
     # Setup environment
     env, workspace_root, script_dir, source_cmd = setup_environment()
 
-    # Check robot status
-    if not check_robot_running(source_cmd):
-        print(f"{Colors.RED}ERROR: Robot not running!{Colors.NC}")
-        print(f"Please start the robot first:")
-        print(f"  {Colors.YELLOW}./scripts/start_robot.sh{Colors.NC}")
-        sys.exit(1)
+    # Cleanup ALL old processes before starting (autonomous AND robot)
+    print(f"{Colors.YELLOW}Cleaning up old processes...{Colors.NC}")
+    cleanup_result = subprocess.run(
+        ["pkill", "-9", "-f", "perception_node|lane_detection_node|llm_decision_node|control_node|tesla_ui_server|Ackman_driver_R2|base_node_R2|ydlidar_direct_node|astra_camera_node"],
+        capture_output=True
+    )
+    if cleanup_result.returncode == 0:
+        print(f"{Colors.GREEN}✓ Killed old processes{Colors.NC}")
+        time.sleep(1)  # Wait for processes to fully terminate
+    else:
+        print(f"{Colors.GREEN}✓ No old processes to cleanup{Colors.NC}")
+    print()
+
+    # Check hardware devices
+    check_hardware_devices()
 
     processes = []
+
+    # Launch robot hardware OR verify it's running
+    if not check_robot_running(source_cmd):
+        # Robot not running - launch it
+        robot_proc = launch_robot_hardware(source_cmd, workspace_root)
+        processes.append(robot_proc)
+
+        # Wait for robot topics to appear
+        if not wait_for_robot_topics(source_cmd, timeout=30):
+            print(f"{Colors.RED}❌ Robot failed to start properly!{Colors.NC}")
+            print(f"{Colors.YELLOW}Check hardware connections and try again.{Colors.NC}")
+            sys.exit(1)
+
+        print(f"{Colors.GREEN}✅ Robot hardware operational{Colors.NC}\n")
+    else:
+        # Robot already running - use existing
+        print(f"{Colors.GREEN}✓ Robot already running (using existing){Colors.NC}\n")
 
     # Start temperature monitoring thread
     stop_event = threading.Event()
@@ -599,28 +729,41 @@ def main():
     temp_thread.start()
     print(f"{Colors.GREEN}✓ Temperature monitoring active{Colors.NC}\n")
 
-    try:
-        # 0. Launch LIDAR (if not already running)
-        lidar_needed = True
-        try:
-            check_res = subprocess.run(
-                f"{source_cmd} && timeout 2 ros2 topic list",
-                shell=True,
-                executable='/bin/bash',
-                capture_output=True,
-                text=True
-            )
-            if "/scan" in check_res.stdout:
-                print(f"{Colors.GREEN}✓ LIDAR already running (/scan detected){Colors.NC}\n")
-                lidar_needed = False
-        except:
-            pass
+    # If --robot-only flag is set, skip autonomous system
+    if args.robot_only:
+        print(f"{Colors.MAGENTA}{'=' * 70}{Colors.NC}")
+        print(f"{Colors.MAGENTA}⏭️  ROBOT-ONLY MODE{Colors.NC}")
+        print(f"{Colors.MAGENTA}{'=' * 70}{Colors.NC}")
+        print(f"{Colors.GREEN}✅ Robot hardware running{Colors.NC}")
+        print(f"{Colors.YELLOW}⏭️  Skipping Autonomous Driving System{Colors.NC}")
+        print(f"{Colors.YELLOW}⏭️  Skipping RTAB-Map SLAM{Colors.NC}")
+        print()
+        print(f"{Colors.CYAN}Robot is ready. Press Ctrl+C to stop.{Colors.NC}\n")
 
-        if lidar_needed:
-            lidar_proc = launch_lidar(source_cmd, workspace_root)
-            processes.append(lidar_proc)
-            print(f"{Colors.YELLOW}⏳ Waiting for LIDAR to initialize (3s)...{Colors.NC}")
-            time.sleep(3)
+        # Enter monitoring loop (just keep processes alive)
+        try:
+            while True:
+                # Check if thermal shutdown requested
+                if shutdown_requested:
+                    break
+                # Check if robot process terminated
+                for proc in processes:
+                    if proc.poll() is not None:
+                        print(f"{Colors.RED}Robot process terminated!{Colors.NC}")
+                        break
+                time.sleep(0.5)
+        except KeyboardInterrupt:
+            print(f"\n{Colors.YELLOW}Stopping robot...{Colors.NC}")
+        finally:
+            # Cleanup
+            for proc in processes:
+                if proc.poll() is None:
+                    proc.terminate()
+            sys.exit(0)
+
+    try:
+        # NOTE: LIDAR is launched by robot hardware (yahboomcar_bringup_R2_full_launch.py)
+        # No need to launch separately - would cause device conflicts
 
         # 1. Launch RTAB-Map SLAM (if enabled)
         if not args.no_rtabmap:
@@ -639,7 +782,6 @@ def main():
 
             print(f"{Colors.YELLOW}⏳ Waiting for autonomous system to initialize...{Colors.NC}")
             print(f"{Colors.CYAN}   • Loading YOLO11 model (yolo11s.pt)...{Colors.NC}")
-            print(f"{Colors.CYAN}   • Loading DINOv2 features (facebook/dinov2-small)...{Colors.NC}")
             print(f"{Colors.CYAN}   • Connecting to TinyLlama 1.1B via Ollama (GPU optimized)...{Colors.NC}")
             print(f"{Colors.CYAN}     (Use model:=qwen3:0.6b to switch to Qwen3){Colors.NC}")
             time.sleep(12)  # Increased for all 3 nodes to initialize
@@ -713,14 +855,13 @@ def main():
 
         if not args.no_fusion:
             print(f"{Colors.CYAN}🤖 AUTONOMOUS DRIVING STATUS:{Colors.NC}")
-            print(f"  ✅ Perception: YOLO11 + DINOv2 running")
+            print(f"  ✅ Perception: YOLO11 object detection running")
             print(f"  ✅ Decision: Qwen3 LLM making decisions")
             print(f"  ✅ Control: {Colors.GREEN}MOTORS ENABLED - ROBOT WILL MOVE{Colors.NC}")
             print(f"  ✅ Tesla UI: http://localhost:5000")
             print()
             print(f"{Colors.YELLOW}🚗 ROBOT BEHAVIOR:{Colors.NC}")
             print(f"  • Detects objects with camera + YOLO")
-            print(f"  • Understands scene with DINOv2")
             print(f"  • Makes decisions with Qwen3 LLM")
             print(f"  • {Colors.GREEN}Sends commands to motors automatically{Colors.NC}")
             print(f"  • Stops if: obstacle detected, no path, or safety timeout")

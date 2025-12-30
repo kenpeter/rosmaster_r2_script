@@ -136,9 +136,20 @@ def stop_processes():
     kill_process("robot_state_publisher", "Robot state publisher")
     kill_process("joint_state_publisher", "Joint state publisher")
 
-    # Stop YOLO and vision
+    # Stop autonomous driving nodes (consolidated script)
+    kill_process("perception_node", "Perception node (YOLO+DINOv2)")
+    kill_process("lane_detection_node", "Lane detection node")
+    kill_process("llm_decision_node", "LLM decision node")
+    kill_process("control_node", "Control node")
+    kill_process("tesla_ui_server", "Tesla Web UI server")
+
+    # Stop YOLO and vision (legacy)
     kill_process("yolo_ros", "YOLO detection")
     kill_process("vlm_scene", "VLM scene understanding")
+
+    # Stop RTAB-Map SLAM
+    kill_process("rtabmap", "RTAB-Map SLAM")
+    kill_process("rgbd_odometry", "RGBD odometry")
 
     # Stop visualization
     kill_process("rqt_image_view", "RQT image view")
@@ -183,10 +194,17 @@ def verify_stopped():
 def main():
     print_header()
 
-    # IMPORTANT: Send stop command BEFORE killing processes
-    # This ensures motors stop rotating
+    # IMPORTANT: Kill control nodes FIRST, then send stop commands
+    # This prevents control_node from overriding stop commands (race condition fix)
+    print(f"{YELLOW}Stopping autonomous control nodes...{NC}")
+    kill_process("control_node", "Control node")
+    kill_process("llm_decision_node", "LLM decision node")
+    time.sleep(0.5)  # Ensure they're fully stopped
+
+    # NOW send stop command (no one to override it)
     send_stop_command()
 
+    # Stop remaining processes
     stop_processes()
 
     print(f"{GREEN}========================================={NC}")
