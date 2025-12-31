@@ -156,11 +156,23 @@ def stop_processes():
     kill_process("rviz2", "RViz")
     kill_process("show_3d_world", "3D visualization")
 
+    # Stop ROS2 core and transforms
+    kill_process("static_transform_publisher", "Static Transform Publisher")
+    kill_process("ros2", "ROS2 CLI/Daemon")
+
     # Stop debug
     kill_process("debug_logger", "Debug logger")
 
     print("")
     print(f"{BLUE}Cleaning up system resources...{NC}")
+    
+    # Stop ROS2 Daemon explicitly
+    print(f"{YELLOW}Stopping ROS2 Daemon...{NC}")
+    subprocess.run(["ros2", "daemon", "stop"], stderr=subprocess.DEVNULL)
+    
+    # Clean up Shared Memory (FastDDS)
+    print(f"{YELLOW}Cleaning up shared memory (FastDDS)...{NC}")
+    subprocess.run("rm -f /dev/shm/fastrtps* /dev/shm/sem.fastrtps* /dev/shm/nvscibuf*", shell=True, stderr=subprocess.DEVNULL)
 
     # Kill any zombie processes
     subprocess.run("killall -q zombie 2>/dev/null || true", shell=True)
@@ -171,7 +183,7 @@ def verify_stopped():
     """Check if any robot processes are still running"""
     # Get list of processes, excluding grep itself
     result = subprocess.run(
-        "ps aux | grep -E 'yahboomcar|sllidar|astra_camera|Ackman_driver|base_node|ydlidar' | grep -v grep | grep -v 'stop_auto.py'",
+        "ps aux | grep -E 'yahboomcar|sllidar|astra_camera|Ackman_driver|base_node|ydlidar|static_transform_publisher|ros2' | grep -v grep | grep -v 'stop_auto.py'",
         shell=True,
         capture_output=True,
         text=True
@@ -184,10 +196,13 @@ def verify_stopped():
         return True
     else:
         # Count lines
-        remaining = len([line for line in result.stdout.strip().split('\n') if line.strip()])
+        lines = [line for line in result.stdout.strip().split('\n') if line.strip()]
+        remaining = len(lines)
         print(f"{YELLOW}⚠️  Warning: {remaining} robot processes still running{NC}")
         print("")
-        print("Remaining processes:")
+        print("Remaining processes (try 'kill -9 <PID>' manually):")
+        for line in lines:
+            print(f"  {line}")
         print(result.stdout)
         return False
 

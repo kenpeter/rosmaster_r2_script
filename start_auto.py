@@ -183,7 +183,6 @@ def setup_environment():
     # Build source commands (single line for subprocess)
     source_cmd = (
         f"source /opt/ros/humble/setup.bash && "
-        f"source /home/jetson/yahboomcar_ros2_ws/software/library_ws/install/setup.bash && "
         f"cd {workspace_root} && "
         f"source install/setup.bash && "
         f"export ROS_DOMAIN_ID=28"
@@ -206,7 +205,7 @@ def check_robot_running(source_cmd):
             timeout=5
         )
 
-        if "/odom" in result.stdout:
+        if "/odometry/filtered" in result.stdout:
             # ROS2 discovery working - check sensors
             lidar_ok = "/scan" in result.stdout
             camera_ok = "/camera/depth/image_raw" in result.stdout or "/camera/color/image_raw" in result.stdout
@@ -297,7 +296,7 @@ def launch_robot_hardware(source_cmd, workspace_root):
 
     print(f"{Colors.CYAN}Components:{Colors.NC}")
     print(f"  • Motor driver (Ackermann R2)")
-    print(f"  • Odometry (base_node_R2 → /odom)")
+    print(f"  • Odometry (base_node_R2 → /odometry/filtered)")
     print(f"  • YDLidar (→ /scan)")
     print(f"  • Astra camera (→ /camera/color/image_raw, /camera/depth/image_raw)")
     print(f"  • IMU filter")
@@ -315,44 +314,98 @@ def launch_robot_hardware(source_cmd, workspace_root):
     print(f"{Colors.GREEN}✓ Robot hardware launched (PID: {proc.pid}){Colors.NC}")
     return proc
 
-def wait_for_robot_topics(source_cmd, timeout=30):
-    """Wait for critical robot topics to appear"""
-    print(f"\n{Colors.YELLOW}⏳ Waiting for robot topics...{Colors.NC}")
+def wait_for_robot_topics(source_cmd, timeout=45):
+    """Wait for critical robot topics and verify they're publishing data"""
+    print(f"\n{Colors.YELLOW}⏳ Waiting for robot topics (camera needs ~10s to initialize)...{Colors.NC}")
 
-    required_topics = ['/odom', '/scan', '/camera/color/image_raw']
+    # Critical topics (system cannot run without these)
+    critical_topics = ['/odometry/filtered', '/scan']  # Robot publishes /odometry/filtered, not /odom
+    # Optional topics (warn if missing but continue - camera can fail due to "Resource busy")
+    optional_topics = ['/camera/color/image_raw']
+
     start_time = time.time()
+    all_topics = critical_topics + optional_topics
 
     while time.time() - start_time < timeout:
         result = subprocess.run(
-            f"{source_cmd} && ros2 topic list",
+            f"{source_cmd} && ros2 topic list 2>&1",
             shell=True,
             executable='/bin/bash',
             capture_output=True,
             text=True
         )
 
-        topics = result.stdout.strip().split('\n')
-        found = [t for t in required_topics if t in topics]
+        # Debug: print stderr if there's an error
+        if result.returncode != 0:
+            if time.time() - start_time > 5:  # Only show after 5 seconds
+                print(f"\n{Colors.YELLOW}Debug: ros2 topic list error: {result.stderr[:200]}{Colors.NC}")
 
-        if len(found) == len(required_topics):
-            print(f"{Colors.GREEN}✓ All robot topics ready!{Colors.NC}")
-            for topic in required_topics:
-                print(f"  ✓ {topic}")
+        topics = result.stdout.strip().split('\n')
+        found_critical = [t for t in critical_topics if t in topics]
+        found_optional = [t for t in optional_topics if t in topics]
+
+        # Check if critical topics are all present
+        if len(found_critical) == len(critical_topics):
+            print(f"\n{Colors.GREEN}✓ Critical robot topics ready!{Colors.NC}")
+            for topic in found_critical:
+                # Verify topic is actually publishing
+                hz_result = subprocess.run(
+                    f"{source_cmd} && timeout 2 ros2 topic hz {topic} 2>&1",
+                    shell=True,
+                    executable='/bin/bash',
+                    capture_output=True,
+                    text=True
+                )
+                if "average rate:" in hz_result.stdout:
+                    rate = hz_result.stdout.split("average rate:")[1].split()[0]
+                    print(f"  {Colors.GREEN}✓{Colors.NC} {topic} ({rate} Hz)")
+                else:
+                    print(f"  {Colors.GREEN}✓{Colors.NC} {topic} (topic exists)")
+
+            # Check optional topics
+            if len(found_optional) < len(optional_topics):
+                print(f"\n{Colors.YELLOW}⚠️  Optional sensors missing:{Colors.NC}")
+                for topic in optional_topics:
+                    if topic not in found_optional:
+                        if 'camera' in topic:
+                            print(f"  {Colors.YELLOW}!{Colors.NC} {topic} - Camera not available (LIDAR-only mode)")
+                print(f"{Colors.CYAN}→ System will run with reduced sensor coverage{Colors.NC}")
+            else:
+                # Verify optional topics are publishing
+                for topic in found_optional:
+                    hz_result = subprocess.run(
+                        f"{source_cmd} && timeout 2 ros2 topic hz {topic} 2>&1",
+                        shell=True,
+                        executable='/bin/bash',
+                        capture_output=True,
+                        text=True
+                    )
+                    if "average rate:" in hz_result.stdout:
+                        rate = hz_result.stdout.split("average rate:")[1].split()[0]
+                        print(f"  {Colors.GREEN}✓{Colors.NC} {topic} ({rate} Hz)")
+                    else:
+                        print(f"  {Colors.YELLOW}!{Colors.NC} {topic} (exists but not publishing)")
+
             print()
             return True
 
-        print(f"   Found {len(found)}/{len(required_topics)} topics... ({int(time.time() - start_time)}s)", end='\r')
+        print(f"   Found {len(found_critical)}/{len(critical_topics)} critical topics... ({int(time.time() - start_time)}s)", end='\r')
         time.sleep(0.5)
 
     # Timeout
-    print(f"\n{Colors.RED}❌ ERROR: Robot topics not available after {timeout}s{Colors.NC}")
-    print(f"{Colors.YELLOW}Found topics:{Colors.NC}")
-    for topic in found:
+    print(f"\n{Colors.RED}❌ ERROR: Critical robot topics not available after {timeout}s{Colors.NC}")
+    print(f"{Colors.GREEN}Found topics:{Colors.NC}")
+    for topic in found_critical:
         print(f"  ✓ {topic}")
-    print(f"{Colors.RED}Missing topics:{Colors.NC}")
-    for topic in required_topics:
-        if topic not in found:
-            print(f"  ✗ {topic}")
+    print(f"{Colors.RED}Missing critical topics:{Colors.NC}")
+    for topic in critical_topics:
+        if topic not in found_critical:
+            if '/scan' in topic:
+                print(f"  ✗ {topic} - LIDAR not publishing!")
+            elif '/odometry' in topic:
+                print(f"  ✗ {topic} - Odometry not available!")
+            elif '/camera' in topic:
+                print(f"  ✗ {topic} - Camera not publishing!")
     print()
     return False
 
@@ -395,6 +448,118 @@ def launch_rtabmap(source_cmd, workspace_root):
     )
 
     return process
+
+def wait_for_autonomous_nodes(source_cmd, timeout=30):
+    """Wait for autonomous nodes to start publishing data"""
+    print(f"\n{Colors.YELLOW}⏳ Waiting for autonomous nodes to start...{Colors.NC}")
+
+    # Required output topics from autonomous nodes
+    required_topics = {
+        '/autonomous/detections': 'Perception (YOLO)',
+        '/autonomous/lane_detections': 'Lane Detection',
+        '/autonomous/decision': 'LLM Decision'
+    }
+
+    start_time = time.time()
+
+    while time.time() - start_time < timeout:
+        result = subprocess.run(
+            f"{source_cmd} && ros2 topic list",
+            shell=True,
+            executable='/bin/bash',
+            capture_output=True,
+            text=True
+        )
+
+        topics = result.stdout.strip().split('\n')
+        found = {topic: name for topic, name in required_topics.items() if topic in topics}
+
+        if len(found) == len(required_topics):
+            # All topics exist, now verify they're publishing
+            print(f"\n{Colors.GREEN}✓ Autonomous nodes initialized!{Colors.NC}")
+            all_publishing = True
+
+            for topic, name in found.items():
+                hz_result = subprocess.run(
+                    f"{source_cmd} && timeout 2 ros2 topic hz {topic} 2>&1",
+                    shell=True,
+                    executable='/bin/bash',
+                    capture_output=True,
+                    text=True
+                )
+                if "average rate:" in hz_result.stdout:
+                    rate = hz_result.stdout.split("average rate:")[1].split()[0]
+                    print(f"  {Colors.GREEN}✓{Colors.NC} {name}: {topic} ({rate} Hz)")
+                else:
+                    print(f"  {Colors.YELLOW}!{Colors.NC} {name}: {topic} (topic exists, waiting for data...)")
+                    all_publishing = False
+
+            if all_publishing:
+                print()
+                return True
+
+        elapsed = int(time.time() - start_time)
+        print(f"   Autonomous nodes initializing... ({len(found)}/{len(required_topics)} topics, {elapsed}s)", end='\r')
+        time.sleep(0.5)
+
+    # Timeout - but this is not critical, continue anyway
+    print(f"\n{Colors.YELLOW}⚠️  Autonomous nodes slow to start (timeout after {timeout}s){Colors.NC}")
+    print(f"{Colors.CYAN}→ Continuing anyway, nodes may still be initializing...{Colors.NC}")
+    print()
+    return False
+
+def launch_vllm_server(workspace_root):
+    """Launch vLLM server for LLM inference"""
+    print(f"\n{Colors.CYAN}{'='*60}{Colors.NC}")
+    print(f"{Colors.CYAN}Starting vLLM Server{Colors.NC}")
+    print(f"{Colors.CYAN}{'='*60}{Colors.NC}")
+
+    vllm_script = os.path.join(workspace_root, 'scripts', 'start_vllm_server.sh')
+
+    if not os.path.exists(vllm_script):
+        print(f"{Colors.RED}✗ vLLM startup script not found: {vllm_script}{Colors.NC}")
+        sys.exit(1)
+
+    try:
+        # Launch vLLM server in background
+        subprocess.Popen([vllm_script], shell=True)
+        print(f"{Colors.GREEN}✓ vLLM server starting...{Colors.NC}")
+        return True
+    except Exception as e:
+        print(f"{Colors.RED}✗ Failed to launch vLLM server: {e}{Colors.NC}")
+        return False
+
+
+def wait_for_vllm_ready(timeout=120):
+    """Wait for vLLM server to be ready"""
+    print(f"{Colors.CYAN}Waiting for vLLM server to load model...{Colors.NC}")
+
+    vllm_health_url = "http://localhost:8000/health"
+    start_time = time.time()
+
+    while time.time() - start_time < timeout:
+        try:
+            response = requests.get(vllm_health_url, timeout=2)
+            if response.status_code == 200:
+                print(f"{Colors.GREEN}✓ vLLM server ready!{Colors.NC}")
+
+                # Verify model is loaded
+                models_response = requests.get("http://localhost:8000/v1/models", timeout=2)
+                if models_response.status_code == 200:
+                    models = models_response.json().get('data', [])
+                    if any(m.get('id') == 'qwen3-0.6b' for m in models):
+                        print(f"{Colors.GREEN}✓ Model 'qwen3-0.6b' loaded and ready{Colors.NC}")
+                        return True
+        except:
+            pass
+
+        elapsed = time.time() - start_time
+        print(f"{Colors.YELLOW}  Waiting for vLLM... ({elapsed:.0f}s){Colors.NC}", end='\r')
+        time.sleep(2)
+
+    print(f"\n{Colors.RED}✗ vLLM server failed to start within {timeout}s{Colors.NC}")
+    print(f"{Colors.YELLOW}Check logs: tail -f /tmp/vllm_server.log{Colors.NC}")
+    return False
 
 def launch_autonomous_system(source_cmd, workspace_root, test_mode=False):
     """Launch autonomous driving: Perception (YOLO) + LLM Decision + Control"""
@@ -511,7 +676,7 @@ class TeslaUIBridge:
             self.LaserScan, '/scan', self.lidar_callback, qos_lidar)
 
         self.odom_sub = self.create_subscription(
-            self.Odometry, '/odom', self.odom_callback, qos_camera)
+            self.Odometry, '/odometry/filtered', self.odom_callback, qos_camera)
 
         self.lane_sub = self.create_subscription(
             self.String, '/autonomous/lane_detections', self.lane_callback, 10)
@@ -782,16 +947,20 @@ def main():
         else:
             print(f"{Colors.YELLOW}⏭️  Skipping RTAB-Map SLAM{Colors.NC}\n")
 
-        # 2. Launch Autonomous Driving System (if enabled)
+        # 2a. TensorRT-LLM loads directly in llm_decision_node (no separate server needed)
+        # vLLM server launch removed - using native TensorRT-LLM integration
+
+        # 2b. Launch Autonomous Driving System (if enabled)
         if not args.no_fusion:
             autonomous_proc = launch_autonomous_system(source_cmd, workspace_root, test_mode=args.test_mode)
             processes.append(autonomous_proc)
 
-            print(f"{Colors.YELLOW}⏳ Waiting for autonomous system to initialize...{Colors.NC}")
             print(f"{Colors.CYAN}   • Loading YOLO11 model (yolo11s.pt)...{Colors.NC}")
-            print(f"{Colors.CYAN}   • Connecting to TinyLlama 1.1B via Ollama (GPU optimized)...{Colors.NC}")
-            print(f"{Colors.CYAN}     (Use model:=qwen3:0.6b to switch to Qwen3){Colors.NC}")
-            time.sleep(12)  # Increased for all 3 nodes to initialize
+            print(f"{Colors.CYAN}   • Loading TensorRT-LLM engine (Qwen2.5-0.5B INT4)...{Colors.NC}")
+            print(f"{Colors.YELLOW}   ⏳ TensorRT-LLM engine will load in ~20s when llm_decision_node starts{Colors.NC}")
+
+            # Wait for autonomous nodes to start publishing (with timeout)
+            wait_for_autonomous_nodes(source_cmd, timeout=30)
 
             # 2.1 Launch Tesla FSD-Style Web UI
             print(f"\n{Colors.MAGENTA}{'=' * 70}{Colors.NC}")
@@ -936,6 +1105,8 @@ def main():
             print(f"{Colors.YELLOW}⚠️  Could not send motor stop command{Colors.NC}")
 
         time.sleep(0.5)  # Give motors time to stop
+
+        # TensorRT-LLM runs in-process, no separate server to stop
 
         # Cleanup all processes
         for proc in processes:
