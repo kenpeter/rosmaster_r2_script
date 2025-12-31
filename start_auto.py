@@ -222,7 +222,14 @@ def check_robot_running(source_cmd):
                 print(f"{Colors.RED}✗ Camera not found{Colors.NC}")
 
             print()
-            return True
+
+            # CRITICAL FIX: Only return True if ALL components are running
+            # Otherwise robot hardware needs to be relaunched
+            if lidar_ok and camera_ok:
+                return True
+            else:
+                print(f"{Colors.YELLOW}⚠️  Robot incomplete - will relaunch{Colors.NC}")
+                return False
 
     except:
         pass  # Fall through to process check
