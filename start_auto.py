@@ -183,6 +183,7 @@ def setup_environment():
     # Build source commands (single line for subprocess)
     source_cmd = (
         f"source /opt/ros/humble/setup.bash && "
+        f"source /home/jetson/yahboomcar_ros2_ws/software/library_ws/install/setup.bash && "
         f"cd {workspace_root} && "
         f"source install/setup.bash && "
         f"export ROS_DOMAIN_ID=28"
@@ -1056,6 +1057,21 @@ def main():
         print(f"  • Detections: {Colors.CYAN}ros2 topic echo /autonomous/detections{Colors.NC}")
         print()
         print(f"{Colors.RED}🛑 EMERGENCY STOP: Press Ctrl+C{Colors.NC}\n")
+
+        # Auto-test function (runs in background after 30s delay)
+        def delayed_test_runner():
+            """Launch test suite 30s after autonomous system starts"""
+            time.sleep(30)
+            print(f"\n{Colors.CYAN}{'='*70}{Colors.NC}")
+            print(f"{Colors.CYAN}🔍 AUTO-TESTING: Running system diagnostics...{Colors.NC}")
+            print(f"{Colors.CYAN}{'='*70}{Colors.NC}\n")
+
+            test_cmd = f"{source_cmd} && cd {workspace_root} && python3 scripts/start_auto_test.py"
+            subprocess.run(test_cmd, shell=True, executable='/bin/bash')
+
+        # Launch auto-test in background (daemon thread won't block shutdown)
+        test_thread = threading.Thread(target=delayed_test_runner, daemon=True)
+        test_thread.start()
 
         # Wait for processes or thermal shutdown
         while True:
