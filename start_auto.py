@@ -1058,8 +1058,8 @@ def main():
         print()
         print(f"{Colors.RED}🛑 EMERGENCY STOP: Press Ctrl+C{Colors.NC}\n")
 
-        # Auto-test function (runs in background after 30s delay)
-        def delayed_test_runner():
+        # Auto-test function (runs after 30s to allow system to stabilize)
+        def auto_test_runner():
             """Launch test suite 30s after autonomous system starts"""
             time.sleep(30)
             print(f"\n{Colors.CYAN}{'='*70}{Colors.NC}")
@@ -1070,7 +1070,7 @@ def main():
             subprocess.run(test_cmd, shell=True, executable='/bin/bash')
 
         # Launch auto-test in background (daemon thread won't block shutdown)
-        test_thread = threading.Thread(target=delayed_test_runner, daemon=True)
+        test_thread = threading.Thread(target=auto_test_runner, daemon=True)
         test_thread.start()
 
         # Wait for processes or thermal shutdown
